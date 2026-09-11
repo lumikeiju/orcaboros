@@ -1,8 +1,8 @@
 <!-- @format -->
 
-# {{project_name}} - Changelog
+# Orcaboros - Changelog
 
-All notable changes to {{project_name}} are documented in this file.
+All notable changes to Orcaboros are documented in this file.
 
 The format of this changelog is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
@@ -12,26 +12,26 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
--
+- Browser-first GTFS stop review and deterministic OSM Change export foundation.
 
 ### Changed
 
--
+- Replaced the repository template with the Orcaboros release-1 architecture.
 
 ### Fixed
 
--
+- None.
 
-## v{{project_version}} ({{release_date_yyyy_mm_dd}})
+## v0.1.0 (2026-09-10)
 
 ### Added
 
--
+- Initial private pre-release application structure.
 
 ### Changed
 
--
+- None.
 
 ### Fixed
 
--
+- None.
