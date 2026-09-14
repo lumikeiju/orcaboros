@@ -6,7 +6,7 @@ import {
   STOCK_SOURCE_FEED_DEFINITIONS,
   validateSourceFeedSelection
 } from "../../src/domain/source-feed";
-import { getPugetSoundProfile } from "../../src/profiles";
+import { getProfileForFeedId, getPugetSoundProfile } from "../../src/profiles";
 import {
   validateMappingProfile,
   ProfileValidationError
@@ -21,14 +21,20 @@ describe("source-feed identity", () => {
     });
   });
 
-  it("rejects the consolidated feed before profile lookup", () => {
-    expect(() => deriveSourceFeedId("US-WA-PSC.zip")).toThrow("US-WA-PSC");
+  it("derives the consolidated feed so the picker can warn before profile lookup", () => {
+    expect(deriveSourceFeedId("US-WA-PSC.zip")).toBe(
+      CONSOLIDATED_SOURCE_FEED_ID
+    );
     expect(
       validateSourceFeedSelection(
         [CONSOLIDATED_SOURCE_FEED_ID],
         STOCK_SOURCE_FEED_DEFINITIONS
       )
     ).toEqual([{ kind: "consolidated", sourceFeedId: "US-WA-PSC" }]);
+  });
+
+  it("keeps ZIPs with editable but unsupported filename IDs visible", () => {
+    expect(deriveSourceFeedId("feed with spaces.zip")).toBe("FEED WITH SPACES");
   });
 
   it("rejects duplicate and unknown selections", () => {
@@ -47,6 +53,13 @@ describe("source-feed identity", () => {
     expect(
       getPugetSoundProfile().sourceFeeds.map((source) => source.id)
     ).toEqual(STOCK_SOURCE_FEED_DEFINITIONS.map((source) => source.id));
+  });
+
+  it("looks up a stock profile by normalized feed ID", () => {
+    expect(getProfileForFeedId("us-wa-kcm")?.sourceFeeds).toEqual([
+      expect.objectContaining({ id: "US-WA-KCM" })
+    ]);
+    expect(getProfileForFeedId("US-WA-UNKNOWN")).toBeUndefined();
   });
 
   it("does not allow a custom profile to re-enable US-WA-PSC", () => {

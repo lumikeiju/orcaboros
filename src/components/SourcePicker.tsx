@@ -1,6 +1,14 @@
-import { type ChangeEvent, type ReactElement, useMemo } from "react";
+import {
+  type ChangeEvent,
+  type DragEvent,
+  type ReactElement,
+  useMemo,
+  useRef,
+  useState
+} from "react";
 import {
   deriveSourceFeedId,
+  normalizeSourceFeedId,
   SourceFeedDefinition,
   validateSourceFeedSelection
 } from "../domain/source-feed";
@@ -13,6 +21,7 @@ export type SelectedArchive = {
 type SourcePickerProps = {
   definitions: readonly SourceFeedDefinition[];
   selected: readonly SelectedArchive[];
+  allowUnknown?: boolean;
   onSelected: (
     archives: readonly SelectedArchive[],
     errors: readonly string[]
@@ -22,22 +31,47 @@ type SourcePickerProps = {
 export function SourcePicker({
   definitions,
   selected,
+  allowUnknown = false,
   onSelected
 }: SourcePickerProps): ReactElement {
+  const [isDragActive, setIsDragActive] = useState(false);
+  const dragDepth = useRef(0);
+  const [fileSelectionErrors, setFileSelectionErrors] = useState<
+    readonly string[]
+  >([]);
   const selectedIds = useMemo(
     () => selected.map((archive) => archive.sourceFeedId),
     [selected]
   );
-  const profileIssues = validateSourceFeedSelection(selectedIds, definitions);
+  const profileIssues = validateSourceFeedSelection(
+    selectedIds,
+    definitions
+  ).filter((issue) => allowUnknown || issue.kind !== "unsupported");
 
-  function handleChange(event: ChangeEvent<HTMLInputElement>): void {
-    const files = [...(event.target.files ?? [])];
+  function selectionErrorsFor(
+    archives: readonly SelectedArchive[],
+    initialErrors: readonly string[] = []
+  ): string[] {
+    const errors = [...initialErrors];
+    const issues = validateSourceFeedSelection(
+      archives.map((archive) => archive.sourceFeedId),
+      definitions
+    );
+    for (const issue of issues) {
+      if (issue.kind === "duplicate") {
+        errors.push(`${issue.sourceFeedId} was selected more than once`);
+      }
+    }
+    return errors;
+  }
+
+  function handleFiles(files: readonly File[]): void {
     const errors: string[] = [];
-    const archives: SelectedArchive[] = [];
+    const newArchives: SelectedArchive[] = [];
     for (const file of files) {
       try {
         const sourceFeedId = deriveSourceFeedId(file.name);
-        archives.push({ file, sourceFeedId });
+        newArchives.push({ file, sourceFeedId });
       } catch (error) {
         errors.push(
           error instanceof Error
@@ -46,31 +80,89 @@ export function SourcePicker({
         );
       }
     }
-    const issues = validateSourceFeedSelection(
-      archives.map((archive) => archive.sourceFeedId),
-      definitions
+    const archives = [...selected, ...newArchives];
+    setFileSelectionErrors(errors);
+    onSelected(archives, selectionErrorsFor(archives, errors));
+  }
+
+  function isUnsupported(sourceFeedId: string): boolean {
+    const issue = profileIssues.find(
+      (candidate) =>
+        candidate.sourceFeedId === normalizeSourceFeedId(sourceFeedId)
     );
-    for (const issue of issues) {
-      errors.push(
-        issue.kind === "duplicate"
-          ? `${issue.sourceFeedId} was selected more than once`
-          : issue.kind === "consolidated"
-            ? "The consolidated US-WA-PSC feed is not supported"
-            : `${issue.sourceFeedId} is not enabled in this profile`
-      );
+    return issue?.kind === "unsupported" || issue?.kind === "consolidated";
+  }
+
+  const unsupportedFeedIds = profileIssues
+    .filter(
+      (issue) => issue.kind === "unsupported" || issue.kind === "consolidated"
+    )
+    .map((issue) => issue.sourceFeedId);
+
+  function handleChange(event: ChangeEvent<HTMLInputElement>): void {
+    const files = [...(event.currentTarget.files ?? [])];
+    event.currentTarget.value = "";
+    handleFiles(files);
+  }
+
+  function handleFeedIdChange(index: number, value: string): void {
+    const archives = selected.map((archive, archiveIndex) =>
+      archiveIndex === index ? { ...archive, sourceFeedId: value } : archive
+    );
+    onSelected(archives, selectionErrorsFor(archives, fileSelectionErrors));
+  }
+
+  function handleRemove(index: number): void {
+    const archives = selected.filter(
+      (_archive, archiveIndex) => archiveIndex !== index
+    );
+    onSelected(archives, selectionErrorsFor(archives, fileSelectionErrors));
+  }
+
+  function handleDragEnter(event: DragEvent<HTMLLabelElement>): void {
+    event.preventDefault();
+    dragDepth.current += 1;
+    setIsDragActive(true);
+  }
+
+  function handleDragOver(event: DragEvent<HTMLLabelElement>): void {
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+  }
+
+  function handleDragLeave(event: DragEvent<HTMLLabelElement>): void {
+    event.preventDefault();
+    dragDepth.current = Math.max(0, dragDepth.current - 1);
+    if (dragDepth.current === 0) {
+      setIsDragActive(false);
     }
-    onSelected(archives, errors);
+  }
+
+  function handleDrop(event: DragEvent<HTMLLabelElement>): void {
+    event.preventDefault();
+    dragDepth.current = 0;
+    setIsDragActive(false);
+    handleFiles([...(event.dataTransfer.files ?? [])]);
   }
 
   return (
     <section className="panel" aria-labelledby="source-heading">
       <h2 id="source-heading">1. Select local GTFS feeds</h2>
       <p>
-        Only <code>stops.txt</code> is read. The source-feed ID comes from each
-        ZIP filename before parsing.
+        Only <code>stops.txt</code> is read. Each feed ID defaults to its ZIP
+        filename and can be edited before importing.
       </p>
-      <label className="file-control" htmlFor="gtfs-files">
-        <span>Select one or more ZIP archives</span>
+      <label
+        className={`file-control file-drop-zone${
+          isDragActive ? " is-dragging" : ""
+        }`}
+        htmlFor="gtfs-files"
+        onDragEnter={handleDragEnter}
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+      >
+        <span>Select or drop one or more ZIP archives</span>
         <input
           id="gtfs-files"
           type="file"
@@ -79,22 +171,79 @@ export function SourcePicker({
           onChange={handleChange}
         />
       </label>
-      <ul className="source-list" aria-label="Selected source feeds">
-        {selected.length === 0 ? (
-          <li className="muted">No archives selected.</li>
-        ) : (
-          selected.map((archive) => (
-            <li key={`${archive.sourceFeedId}-${archive.file.name}`}>
-              <strong>{archive.sourceFeedId}</strong>
-              <span>{archive.file.name}</span>
-            </li>
-          ))
-        )}
-      </ul>
-      {profileIssues.length > 0 && (
-        <p className="error" role="alert">
-          {profileIssues.map((issue) => issue.sourceFeedId).join(", ")} cannot
-          be imported with this profile.
+      <table className="source-table">
+        <caption className="visually-hidden">Selected source feeds</caption>
+        <thead>
+          <tr>
+            <th scope="col">GTFS Feed ID</th>
+            <th scope="col">GTFS Feed ZIP</th>
+            <th scope="col" aria-label="Actions">
+              <span className="visually-hidden">Actions</span>
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {selected.length === 0 ? (
+            <tr>
+              <td className="muted" colSpan={3}>
+                No archives selected.
+              </td>
+            </tr>
+          ) : (
+            selected.map((archive, index) => (
+              <tr key={`${archive.file.name}-${index}`}>
+                <td>
+                  <input
+                    id={`gtfs-feed-id-${index}`}
+                    type="text"
+                    value={archive.sourceFeedId}
+                    aria-label={`GTFS Feed ID for ${archive.file.name}`}
+                    aria-invalid={profileIssues.some(
+                      (issue) =>
+                        issue.sourceFeedId ===
+                        normalizeSourceFeedId(archive.sourceFeedId)
+                    )}
+                    onChange={(event) =>
+                      handleFeedIdChange(index, event.target.value)
+                    }
+                  />
+                </td>
+                <td>{archive.file.name}</td>
+                <td className="source-table-actions">
+                  {isUnsupported(archive.sourceFeedId) && (
+                    <span
+                      className="source-feed-warning"
+                      role="img"
+                      aria-label={`${archive.sourceFeedId} is not supported by this profile`}
+                      title="This feed is not supported by the current profile and will be skipped"
+                    >
+                      !
+                    </span>
+                  )}
+                  <button
+                    type="button"
+                    className="icon-button secondary"
+                    aria-label={`Remove ${archive.file.name}`}
+                    title={`Remove ${archive.file.name}`}
+                    onClick={() => handleRemove(index)}
+                  >
+                    <svg
+                      aria-hidden="true"
+                      viewBox="0 0 24 24"
+                      focusable="false"
+                    >
+                      <path d="M9 3h6l1 2h4v2H4V5h4l1-2Zm-3 6h12l-1 12H7L6 9Zm4 2v8h2v-8h-2Zm4 0v8h2v-8h-2Z" />
+                    </svg>
+                  </button>
+                </td>
+              </tr>
+            ))
+          )}
+        </tbody>
+      </table>
+      {unsupportedFeedIds.length > 0 && (
+        <p className="source-warning" role="status">
+          Unsupported feeds will be skipped: {unsupportedFeedIds.join(", ")}.
         </p>
       )}
     </section>

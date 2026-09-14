@@ -18,7 +18,8 @@ export type MappingField =
   | "location_type"
   | "parent_station"
   | "source_feed_id"
-  | "source_feed_name";
+  | "source_feed_name"
+  | (string & {});
 
 export type MappingValue =
   | { kind: "constant"; value: string }
@@ -95,20 +96,8 @@ function stringArray(
   return value.map((item) => item.trim()).filter((item) => item.length > 0);
 }
 
-const MAPPING_FIELDS: readonly MappingField[] = [
-  "stop_id",
-  "stop_name",
-  "stop_name_expanded",
-  "stop_lat",
-  "stop_lon",
-  "location_type",
-  "parent_station",
-  "source_feed_id",
-  "source_feed_name"
-];
-
 function isMappingField(value: string): value is MappingField {
-  return MAPPING_FIELDS.includes(value as MappingField);
+  return value.length <= 255 && !/[\u0000-\u001f\u007f]/u.test(value);
 }
 
 export function validateMappingProfile(input: unknown): MappingProfile {
@@ -257,7 +246,7 @@ export function validateMappingProfile(input: unknown): MappingProfile {
         if (!isMappingField(field)) {
           issues.push({
             path: `${path}.value.field`,
-            message: "is not a supported source field"
+            message: "must be a safe GTFS field name"
           });
         }
         mappingValue = {
@@ -413,6 +402,8 @@ function fieldValue(field: MappingField, stop: EligibleStop): string {
       return stop.sourceFeedId;
     case "source_feed_name":
       return stop.sourceFeedName;
+    default:
+      return stop.rawFields[field] ?? "";
   }
 }
 

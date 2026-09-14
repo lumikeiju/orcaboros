@@ -52,6 +52,7 @@ export type FeedImportCounts = {
 export type FeedImportResult = {
   sourceFeedId: string;
   sourceFeedName: string;
+  fields: readonly string[];
   eligibleStops: readonly EligibleStop[];
   validStopIds: ReadonlySet<string>;
   diagnostics: readonly StopDiagnostic[];

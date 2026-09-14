@@ -11,6 +11,7 @@ import {
 import {
   SourceFeedDefinition,
   deriveSourceFeedId,
+  isValidSourceFeedId,
   normalizeSourceFeedId,
   validateSourceFeedSelection
 } from "../../domain/source-feed";
@@ -27,6 +28,7 @@ export type ImportProgress = {
 
 export type ImportOptions = {
   definitions: readonly SourceFeedDefinition[];
+  sourceFeedId?: string;
   signal?: AbortSignal;
   onProgress?: (progress: ImportProgress) => void;
 };
@@ -77,7 +79,17 @@ export async function importGtfsArchive(
   archive: NamedBlob,
   options: ImportOptions
 ): Promise<ImportedArchive> {
-  const sourceFeedId = deriveSourceFeedId(archive.name);
+  const sourceFeedId =
+    options.sourceFeedId === undefined
+      ? deriveSourceFeedId(archive.name)
+      : normalizeSourceFeedId(options.sourceFeedId);
+  if (!isValidSourceFeedId(sourceFeedId)) {
+    throw new GtfsImportError(
+      sourceFeedId,
+      "unsupported-source",
+      "source feed ID is invalid"
+    );
+  }
   const selectionIssues = validateSourceFeedSelection(
     [sourceFeedId],
     options.definitions
@@ -236,6 +248,7 @@ export async function importGtfsArchive(
   const result: FeedImportResult = {
     sourceFeedId,
     sourceFeedName: definition.displayName,
+    fields: [...(headers ?? [])],
     eligibleStops,
     validStopIds,
     diagnostics,

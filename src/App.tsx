@@ -1,9 +1,16 @@
 import { type ReactElement, useEffect, useMemo, useRef, useState } from "react";
 import { SourcePicker, SelectedArchive } from "./components/SourcePicker";
+import { ProgressIndicator } from "./components/ProgressIndicator";
 import { ProfileEditor } from "./components/ProfileEditor";
 import { ReviewQueue } from "./components/ReviewQueue";
 import { MapView } from "./components/MapView";
-import { fingerprintProfile, getPugetSoundProfile } from "./profiles";
+import { ThemeToggle, type Theme } from "./components/ThemeToggle";
+import {
+  createCustomProfileForFeedIds,
+  fingerprintProfile,
+  getProfileForFeedIds,
+  getPugetSoundProfile
+} from "./profiles";
 import { MappingProfile } from "./domain/profile";
 import { EligibleStop, FeedImportResult } from "./domain/gtfs";
 import {
@@ -28,8 +35,17 @@ import {
 } from "./infrastructure/osm";
 import { matchStopsInWorker } from "./features/matching/worker-client";
 import { mapStopToOsmTags } from "./infrastructure/gtfs";
+import {
+  createProgressThrottleState,
+  shouldPublishProgress
+} from "./infrastructure/browser/progress";
 import { serializeOsmChange } from "./infrastructure/osm/change-export";
-import { identityTagKey } from "./domain/source-feed";
+import {
+  CONSOLIDATED_SOURCE_FEED_ID,
+  identityTagKey,
+  normalizeSourceFeedId,
+  STOCK_SOURCE_FEED_DEFINITIONS
+} from "./domain/source-feed";
 import {
   IndexedDbSessionRepository,
   MemorySessionRepository,
@@ -38,7 +54,24 @@ import {
   stageAndActivateSession
 } from "./storage";
 
+type ImportProgressState = {
+  sourceFeedId: string;
+  archiveIndex: number;
+  totalArchives: number;
+  stage: string;
+  rowsRead: number;
+};
+
+type OsmProgressState = {
+  phase: "query" | "matching";
+  processed: number;
+  total: number;
+};
+
+type WorkflowStepId = "upload" | "profile" | "retrieve" | "review" | "export";
+
 export function App(): ReactElement {
+  const [theme, setTheme] = useState<Theme>("dark");
   const [profile, setProfile] = useState<MappingProfile>(
     getPugetSoundProfile()
   );
@@ -58,15 +91,23 @@ export function App(): ReactElement {
   const [reviews, setReviews] = useState<ReadonlyMap<string, FeatureReview>>(
     new Map()
   );
+  const [focusedFeatureId, setFocusedFeatureId] = useState<string>();
+  const [openWorkflowStep, setOpenWorkflowStep] = useState<
+    WorkflowStepId | undefined
+  >("upload");
   const [endpoint, setEndpoint] = useState("");
   const [styleUrl, setStyleUrl] = useState("");
   const [status, setStatus] = useState("Select local feeds to begin.");
   const [error, setError] = useState<string | undefined>();
   const [loading, setLoading] = useState(false);
   const [importActive, setImportActive] = useState(false);
+  const [importProgress, setImportProgress] = useState<ImportProgressState>();
   const activeImportHandle = useRef<ImportWorkerHandle | null>(null);
+  const importProgressThrottle = useRef(createProgressThrottleState());
   const [osmRequestActive, setOsmRequestActive] = useState(false);
+  const [osmProgress, setOsmProgress] = useState<OsmProgressState>();
   const osmAbortController = useRef<AbortController | null>(null);
+  const matchingProgressThrottle = useRef(createProgressThrottleState());
   const repository = useMemo<SessionRepository>(
     () =>
       typeof indexedDB === "undefined"
@@ -78,6 +119,10 @@ export function App(): ReactElement {
   const enabledDefinitions = useMemo(
     () => profile.sourceFeeds.filter((source) => source.enabled),
     [profile.sourceFeeds]
+  );
+  const availableFields = useMemo(
+    () => [...new Set(feedSummaries.flatMap((summary) => summary.fields))],
+    [feedSummaries]
   );
 
   useEffect(() => {
@@ -97,6 +142,13 @@ export function App(): ReactElement {
           session.sourceFeeds.map((source) => ({
             sourceFeedId: source.sourceFeedId,
             sourceFeedName: source.sourceFeedName,
+            fields: source.fields ?? [
+              ...new Set(
+                source.eligibleStops.flatMap((stop) =>
+                  Object.keys(stop.rawFields)
+                )
+              )
+            ],
             eligibleStops: source.eligibleStops,
             validStopIds: new Set(source.validStopIds),
             diagnostics: source.diagnostics,
@@ -142,23 +194,59 @@ export function App(): ReactElement {
       setError("Select at least one enabled ZIP archive before importing.");
       return;
     }
+    const importableArchives = archives.filter((archive) =>
+      enabledDefinitions.some(
+        (definition) =>
+          normalizeSourceFeedId(definition.id) ===
+          normalizeSourceFeedId(archive.sourceFeedId)
+      )
+    );
+    if (importableArchives.length === 0) {
+      setError("Select at least one supported ZIP archive before importing.");
+      return;
+    }
+    const skippedArchiveCount = archives.length - importableArchives.length;
     setLoading(true);
     setError(undefined);
+    setImportActive(true);
     try {
       const imported = [];
-      for (const archive of archives) {
+      for (const [archiveIndex, archive] of importableArchives.entries()) {
+        importProgressThrottle.current = createProgressThrottleState();
+        setImportProgress({
+          sourceFeedId: archive.sourceFeedId,
+          archiveIndex: archiveIndex + 1,
+          totalArchives: importableArchives.length,
+          stage: "starting",
+          rowsRead: 0
+        });
         const handle = startArchiveImport(
           archive.file,
           enabledDefinitions,
           (stage, rowsRead) => {
+            if (
+              !shouldPublishProgress(
+                importProgressThrottle.current,
+                stage,
+                stage === "complete"
+              )
+            ) {
+              return;
+            }
             setStatus(`${archive.sourceFeedId}: ${stage} (${rowsRead} rows)`);
-          }
+            setImportProgress({
+              sourceFeedId: archive.sourceFeedId,
+              archiveIndex: archiveIndex + 1,
+              totalArchives: importableArchives.length,
+              stage,
+              rowsRead
+            });
+          },
+          archive.sourceFeedId
         );
         activeImportHandle.current = handle;
-        setImportActive(true);
         imported.push(await handle.promise);
         activeImportHandle.current = null;
-        setImportActive(false);
       }
       const stagedSession = await buildStagedSession(
         crypto.randomUUID(),
@@ -177,12 +265,29 @@ export function App(): ReactElement {
       setNodes([]);
       setMatches(new Map());
       setReviews(new Map());
+      setFocusedFeatureId(undefined);
       setStatus(
         `Imported ${nextStops.length} eligible stops from ${imported.length} source feed${
           imported.length === 1 ? "" : "s"
-        }.`
+        }.${
+          skippedArchiveCount > 0
+            ? ` Skipped ${skippedArchiveCount} unsupported feed${
+                skippedArchiveCount === 1 ? "" : "s"
+              }.`
+            : ""
+        }`
       );
     } catch (caught: unknown) {
+      if (
+        (caught instanceof DOMException && caught.name === "AbortError") ||
+        (caught instanceof Error && caught.name === "AbortError")
+      ) {
+        setError(undefined);
+        setStatus(
+          "Import cancelled. The previous active session remains unchanged."
+        );
+        return;
+      }
       setError(
         caught instanceof Error ? caught.message : "The GTFS import failed."
       );
@@ -190,7 +295,41 @@ export function App(): ReactElement {
     } finally {
       activeImportHandle.current = null;
       setImportActive(false);
+      setImportProgress(undefined);
       setLoading(false);
+    }
+  }
+
+  function handleArchiveSelection(
+    nextArchives: readonly SelectedArchive[],
+    errors: readonly string[]
+  ): void {
+    setArchives(nextArchives);
+    setSelectionErrors(errors);
+    setFeedSummaries([]);
+    setError(errors.length > 0 ? errors.join("; ") : undefined);
+    if (errors.length === 0 && nextArchives.length > 0) {
+      const selectableFeedIds = nextArchives
+        .map((archive) => archive.sourceFeedId)
+        .filter(
+          (sourceFeedId) =>
+            normalizeSourceFeedId(sourceFeedId) !== CONSOLIDATED_SOURCE_FEED_ID
+        );
+      if (selectableFeedIds.length > 0) {
+        try {
+          const matchedProfile =
+            getProfileForFeedIds(selectableFeedIds) ??
+            createCustomProfileForFeedIds(selectableFeedIds);
+          void handleProfileChange(matchedProfile);
+        } catch (caught: unknown) {
+          const message =
+            caught instanceof Error
+              ? caught.message
+              : "The feed ID cannot be used for a mapping profile.";
+          setSelectionErrors([message]);
+          setError(message);
+        }
+      }
     }
   }
 
@@ -213,14 +352,23 @@ export function App(): ReactElement {
         ...new Set(stops.map((stop) => stop.sourceFeedId))
       ]);
       const requests = buildOverpassRequests(bounds, identityKeys);
+      setOsmProgress({ phase: "query", processed: 0, total: requests.length });
       const nodesById = new Map<number, OsmNode>();
-      for (const request of requests) {
+      for (const [requestIndex, request] of requests.entries()) {
+        setStatus(
+          `Retrieving OSM candidates (${requestIndex + 1}/${requests.length})`
+        );
         const requestNodes = await retrieveOverpassNodes(
           endpoint,
           request.query,
           controller.signal
         );
         requestNodes.forEach((node) => nodesById.set(node.id, node));
+        setOsmProgress({
+          phase: "query",
+          processed: requestIndex + 1,
+          total: requests.length
+        });
       }
       const retrieved = [...nodesById.values()];
       const activeSession = await repository.getActiveSession();
@@ -249,13 +397,26 @@ export function App(): ReactElement {
         }
       });
       setNodes(retrieved);
+      setOsmProgress({ phase: "matching", processed: 0, total: stops.length });
+      matchingProgressThrottle.current = createProgressThrottleState();
       const initial = await matchStopsInWorker(
         stops,
         retrieved,
         profile.candidateRadiusMeters,
         profile.autoIdRadiusMeters,
-        (processed, total) =>
-          setStatus(`Matching OSM candidates (${processed}/${total})`)
+        (processed, total) => {
+          if (
+            !shouldPublishProgress(
+              matchingProgressThrottle.current,
+              "matching",
+              processed === total
+            )
+          ) {
+            return;
+          }
+          setStatus(`Matching OSM candidates (${processed}/${total})`);
+          setOsmProgress({ phase: "matching", processed, total });
+        }
       );
       setMatches(initial);
       setReviews(
@@ -308,6 +469,7 @@ export function App(): ReactElement {
       setLoading(false);
       osmAbortController.current = null;
       setOsmRequestActive(false);
+      setOsmProgress(undefined);
     }
   }
 
@@ -502,11 +664,14 @@ export function App(): ReactElement {
       setNodes([]);
       setMatches(new Map());
       setReviews(new Map());
+      setFocusedFeatureId(undefined);
+      setImportProgress(undefined);
       setEndpoint("");
       setStyleUrl("");
       osmAbortController.current?.abort();
       osmAbortController.current = null;
       setOsmRequestActive(false);
+      setOsmProgress(undefined);
       setError(undefined);
       setStatus("Session reset. Select local feeds to begin.");
     } catch (caught: unknown) {
@@ -525,6 +690,7 @@ export function App(): ReactElement {
     setNodes([]);
     setMatches(new Map());
     setReviews(new Map());
+    setFocusedFeatureId(undefined);
     try {
       const activeSession = await repository.getActiveSession();
       if (activeSession !== undefined) {
@@ -568,170 +734,458 @@ export function App(): ReactElement {
       );
     });
 
+  const currentWorkflowStep =
+    openWorkflowStep === undefined ? "upload" : openWorkflowStep;
+  const workflowSteps: readonly {
+    id: WorkflowStepId;
+    number: string;
+    label: string;
+    detail: string;
+  }[] = [
+    {
+      id: "upload",
+      number: "1",
+      label: "Import",
+      detail: "Load your GTFS feed(s)"
+    },
+    {
+      id: "profile",
+      number: "2",
+      label: "Profile",
+      detail: "Configure matching and region"
+    },
+    {
+      id: "retrieve",
+      number: "3",
+      label: "Retrieve",
+      detail: "Get OSM data for comparison"
+    },
+    {
+      id: "review",
+      number: "4",
+      label: "Review",
+      detail: "Inspect discrepancies"
+    },
+    {
+      id: "export",
+      number: "5",
+      label: "Export",
+      detail: "Save results and contribute"
+    }
+  ] as const;
+
+  const decidedReviewCount = [...reviews.values()].filter(
+    (review) => review.state !== "unreviewed"
+  ).length;
+
+  function renderWorkflowContent(stepId: WorkflowStepId): ReactElement {
+    switch (stepId) {
+      case "upload":
+        return (
+          <div
+            id="upload-step-panel"
+            className="workflow-step-panel workflow-step-content"
+            role="region"
+            aria-labelledby="workflow-step-upload"
+          >
+            <SourcePicker
+              definitions={STOCK_SOURCE_FEED_DEFINITIONS}
+              selected={archives}
+              allowUnknown
+              onSelected={handleArchiveSelection}
+            />
+            {selectionErrors.length > 0 && (
+              <div className="panel error-panel" role="alert">
+                {selectionErrors.join("; ")}
+              </div>
+            )}
+            <section
+              className="panel"
+              aria-labelledby="import-heading"
+              aria-busy={importActive}
+            >
+              <h2 id="import-heading">2. Import stop records</h2>
+              <p role="status" aria-live="polite">
+                {status}
+              </p>
+              {importActive && importProgress !== undefined && (
+                <ProgressIndicator
+                  label={`GTFS import: ${importProgress.sourceFeedId}`}
+                  detail={`Feed ${importProgress.archiveIndex} of ${importProgress.totalArchives} - ${importProgress.stage.replace(/-/gu, " ")} - ${importProgress.rowsRead.toLocaleString()} rows`}
+                />
+              )}
+              <div className="button-row">
+                <button
+                  type="button"
+                  onClick={() =>
+                    importActive
+                      ? activeImportHandle.current?.cancel()
+                      : void importSelectedArchives()
+                  }
+                  disabled={loading && !importActive}
+                >
+                  {importActive
+                    ? "Cancel import"
+                    : loading
+                      ? "Working…"
+                      : `Import selected feed${archives.length === 1 ? "" : "s"}`}
+                </button>
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={() => void resetSession()}
+                  disabled={loading}
+                >
+                  Reset current session
+                </button>
+              </div>
+              {error !== undefined && (
+                <p className="error" role="alert">
+                  {error}
+                </p>
+              )}
+              {feedSummaries.length > 0 && (
+                <div
+                  className="diagnostics"
+                  aria-label="GTFS import diagnostics"
+                >
+                  {feedSummaries.map((summary) => (
+                    <div key={summary.sourceFeedId}>
+                      <strong>{summary.sourceFeedId}</strong>:{" "}
+                      {summary.counts.eligibleRows} eligible,{" "}
+                      {summary.counts.skippedRows} skipped (
+                      {summary.counts.unsupportedLocationRows} unsupported
+                      location rows).
+                      {summary.diagnostics.length > 0 && (
+                        <ul>
+                          {summary.diagnostics.slice(0, 5).map((diagnostic) => (
+                            <li
+                              key={`${diagnostic.rowNumber}-${diagnostic.reason}`}
+                            >
+                              row {diagnostic.rowNumber}: {diagnostic.detail}
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+          </div>
+        );
+      case "profile":
+        return (
+          <div
+            id="profile-step-panel"
+            className="workflow-step-panel workflow-step-content"
+            role="region"
+            aria-labelledby="workflow-step-profile"
+          >
+            <ProfileEditor
+              profile={profile}
+              availableFields={availableFields}
+              onChange={(nextProfile) => void handleProfileChange(nextProfile)}
+              onReset={() => void handleProfileChange(getPugetSoundProfile())}
+            />
+          </div>
+        );
+      case "retrieve":
+        return (
+          <section
+            id="retrieve-step-panel"
+            className="workflow-step-panel workflow-step-content panel"
+            role="region"
+            aria-labelledby="workflow-step-retrieve"
+            aria-busy={osmRequestActive}
+          >
+            <h2 id="osm-heading">3. Retrieve OSM candidates</h2>
+            {stops.length === 0 ? (
+              <p className="workflow-step-hint">
+                Import eligible stops first. This step will retrieve nearby OSM
+                candidates for comparison.
+              </p>
+            ) : (
+              <>
+                <p>
+                  The endpoint is used only for this browser session and is not
+                  stored. Requests are node-only and bounded by the candidate
+                  radius.
+                </p>
+                <label>
+                  HTTPS Overpass-compatible endpoint
+                  <input
+                    type="password"
+                    autoComplete="off"
+                    value={endpoint}
+                    onChange={(event) => setEndpoint(event.target.value)}
+                    placeholder="https://your-overpass.example/api/interpreter"
+                  />
+                </label>
+                <label>
+                  Optional session-only MapLibre style URL
+                  <input
+                    type="url"
+                    autoComplete="off"
+                    value={styleUrl}
+                    onChange={(event) => setStyleUrl(event.target.value)}
+                    placeholder="Leave blank for Fiord dark / Positron light"
+                  />
+                </label>
+                <button
+                  type="button"
+                  onClick={() => void retrieveCandidates()}
+                  disabled={loading}
+                >
+                  Retrieve candidates
+                </button>
+                {osmProgress !== undefined && (
+                  <ProgressIndicator
+                    label={
+                      osmProgress.phase === "query"
+                        ? "Overpass query"
+                        : "Matching OSM candidates"
+                    }
+                    detail={
+                      osmProgress.phase === "query"
+                        ? `Query ${osmProgress.processed} of ${osmProgress.total}`
+                        : `Matched ${osmProgress.processed} of ${osmProgress.total}`
+                    }
+                    value={osmProgress.processed}
+                    max={osmProgress.total}
+                  />
+                )}
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={() => osmAbortController.current?.abort()}
+                  disabled={!osmRequestActive}
+                >
+                  Cancel OSM request
+                </button>
+              </>
+            )}
+          </section>
+        );
+      case "review":
+        return (
+          <section
+            id="review-step-panel"
+            className="workflow-step-panel workflow-step-content panel"
+            role="region"
+            aria-labelledby="workflow-step-review"
+          >
+            <h2 id="workflow-sidebar-review-heading">
+              4. Review discrepancies
+            </h2>
+            {stops.length === 0 ? (
+              <p className="workflow-step-hint">
+                Import a feed and retrieve OSM candidates to build the review
+                queue.
+              </p>
+            ) : nodes.length === 0 ? (
+              <p className="workflow-step-hint">
+                Retrieve OSM candidates before reviewing discrepancies.
+              </p>
+            ) : (
+              <>
+                <p>
+                  <strong>{decidedReviewCount.toLocaleString()}</strong> of{" "}
+                  {stops.length.toLocaleString()} decisions recorded.
+                </p>
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={() =>
+                    document
+                      .getElementById("review-step")
+                      ?.scrollIntoView({ behavior: "smooth", block: "start" })
+                  }
+                >
+                  Open review queue
+                </button>
+              </>
+            )}
+          </section>
+        );
+      case "export":
+        return (
+          <section
+            id="export-step-panel"
+            className="workflow-step-panel workflow-step-content panel"
+            role="region"
+            aria-labelledby="workflow-step-export"
+          >
+            <h2 id="export-heading">5. Export reviewed changes</h2>
+            {stops.length === 0 ? (
+              <p className="workflow-step-hint">
+                Complete import, retrieval, and review before exporting.
+              </p>
+            ) : (
+              <>
+                <p>
+                  Download is blocked until every eligible feature has an
+                  explicit decision and each selected node has a valid
+                  post-change tag set.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => void exportDraft()}
+                  disabled={exportBlocked}
+                >
+                  Download OSM Change for JOSM
+                </button>
+              </>
+            )}
+          </section>
+        );
+    }
+  }
+
   return (
     <main className="app-shell">
-      <header className="hero">
-        <p className="eyebrow">Browser-first GTFS / OSM review</p>
-        <h1>Orcaboros</h1>
-        <p>
-          A conservative workflow for reviewing Puget Sound transit stop
-          identities before producing an OSM Change file.
-        </p>
-      </header>
-      <ProfileEditor
-        profile={profile}
-        onChange={(nextProfile) => void handleProfileChange(nextProfile)}
-        onReset={() => void handleProfileChange(getPugetSoundProfile())}
-      />
-      <SourcePicker
-        definitions={enabledDefinitions}
-        selected={archives}
-        onSelected={(next, errors) => {
-          setArchives(next);
-          setSelectionErrors(errors);
-          setFeedSummaries([]);
-          setError(errors.length > 0 ? errors.join("; ") : undefined);
-        }}
-      />
-      {selectionErrors.length > 0 && (
-        <div className="panel error-panel" role="alert">
-          {selectionErrors.join("; ")}
-        </div>
-      )}
-      <section className="panel" aria-labelledby="import-heading">
-        <h2 id="import-heading">2. Import stop records</h2>
-        <p role="status" aria-live="polite">
-          {status}
-        </p>
-        <div className="button-row">
-          <button
-            type="button"
-            onClick={() =>
-              importActive
-                ? activeImportHandle.current?.cancel()
-                : void importSelectedArchives()
-            }
-            disabled={loading && !importActive}
-          >
-            {importActive
-              ? "Cancel import"
-              : loading
-                ? "Working…"
-                : "Import selected feeds"}
-          </button>
-          <button
-            type="button"
-            className="secondary"
-            onClick={() => void resetSession()}
-            disabled={loading}
-          >
-            Reset current session
-          </button>
-        </div>
-        {error !== undefined && (
-          <p className="error" role="alert">
-            {error}
-          </p>
-        )}
-        {feedSummaries.length > 0 && (
-          <div className="diagnostics" aria-label="GTFS import diagnostics">
-            {feedSummaries.map((summary) => (
-              <div key={summary.sourceFeedId}>
-                <strong>{summary.sourceFeedId}</strong>:{" "}
-                {summary.counts.eligibleRows} eligible,{" "}
-                {summary.counts.skippedRows} skipped (
-                {summary.counts.unsupportedLocationRows} unsupported location
-                rows).
-                {summary.diagnostics.length > 0 && (
-                  <ul>
-                    {summary.diagnostics.slice(0, 5).map((diagnostic) => (
-                      <li key={`${diagnostic.rowNumber}-${diagnostic.reason}`}>
-                        row {diagnostic.rowNumber}: {diagnostic.detail}
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-            ))}
+      <header className="app-header">
+        <div className="brand-lockup">
+          <span className="brand-mark" aria-hidden="true" />
+          <div>
+            <h1>Orcaboros</h1>
+            <p>GTFS → OSM</p>
           </div>
-        )}
-      </section>
-      {stops.length > 0 && (
-        <section className="panel" aria-labelledby="osm-heading">
-          <h2 id="osm-heading">Retrieve OSM candidates</h2>
-          <p>
-            The endpoint is used only for this browser session and is not
-            stored. Requests are node-only and bounded by the candidate radius.
-          </p>
-          <label>
-            HTTPS Overpass-compatible endpoint
-            <input
-              type="password"
-              autoComplete="off"
-              value={endpoint}
-              onChange={(event) => setEndpoint(event.target.value)}
-              placeholder="https://your-overpass.example/api/interpreter"
-            />
-          </label>
-          <label>
-            Optional session-only MapLibre style URL
-            <input
-              type="url"
-              autoComplete="off"
-              value={styleUrl}
-              onChange={(event) => setStyleUrl(event.target.value)}
-              placeholder="Leave blank for OpenFreeMap Liberty"
-            />
-          </label>
-          <button
-            type="button"
-            onClick={() => void retrieveCandidates()}
-            disabled={loading}
+        </div>
+        <div className="hero-copy">
+          <p className="eyebrow">Keeping GTFS and OSM in harmony</p>
+          <p>Sync GTFS feed data with OpenStreetMap data</p>
+        </div>
+        <div className="header-actions">
+          <a
+            className="github-link"
+            href="https://github.com/lumikeiju/orcaboros"
+            target="_blank"
+            rel="noreferrer"
           >
-            Retrieve candidates
-          </button>
-          <button
-            type="button"
-            className="secondary"
-            onClick={() => osmAbortController.current?.abort()}
-            disabled={!osmRequestActive}
-          >
-            Cancel OSM request
-          </button>
-        </section>
-      )}
-      {stops.length > 0 && (
-        <>
-          <ReviewQueue
-            stops={stops}
-            matches={matches}
-            reviews={reviews}
-            onAction={applyAction}
-          />
-          <MapView
-            nodes={nodes}
-            stops={stops}
-            styleUrl={styleUrl.length > 0 ? styleUrl : undefined}
-            selectedNodeIds={[...reviews.values()]
-              .map((review) => review.selectedNodeId)
-              .filter((nodeId): nodeId is number => nodeId !== undefined)}
-          />
-          <section className="panel" aria-labelledby="export-heading">
-            <h2 id="export-heading">4. Export reviewed changes</h2>
-            <p>
-              Download is blocked until every eligible feature has an explicit
-              decision and each selected node has a valid post-change tag set.
-            </p>
-            <button
-              type="button"
-              onClick={() => void exportDraft()}
-              disabled={exportBlocked}
-            >
-              Download OSM Change for JOSM
-            </button>
+            GitHub
+          </a>
+          <ThemeToggle theme={theme} onThemeChange={setTheme} />
+        </div>
+      </header>
+      <div className="app-body">
+        <aside className="workflow-sidebar" aria-label="Review workflow">
+          <nav className="workflow-nav" aria-label="Workflow steps">
+            {workflowSteps.map((step) => {
+              const isOpen = openWorkflowStep === step.id;
+              const panelId = `${step.id}-step-panel`;
+              return (
+                <section
+                  className={`workflow-step${isOpen ? " is-open" : ""}`}
+                  key={step.id}
+                >
+                  <button
+                    id={`workflow-step-${step.id}`}
+                    className={`workflow-step-link${
+                      currentWorkflowStep === step.id ? " is-active" : ""
+                    }`}
+                    type="button"
+                    aria-current={
+                      currentWorkflowStep === step.id ? "step" : undefined
+                    }
+                    aria-expanded={isOpen}
+                    aria-controls={panelId}
+                    onClick={() =>
+                      setOpenWorkflowStep((current) =>
+                        current === step.id ? undefined : step.id
+                      )
+                    }
+                  >
+                    <span className="workflow-step-number">{step.number}</span>
+                    <span>
+                      <strong>{step.label}</strong>
+                      <small>{step.detail}</small>
+                    </span>
+                    <span className="workflow-step-chevron" aria-hidden="true">
+                      {isOpen ? "−" : "+"}
+                    </span>
+                  </button>
+                  {isOpen && renderWorkflowContent(step.id)}
+                </section>
+              );
+            })}
+          </nav>
+          <div className="progress-rail" aria-label="Workflow progress">
+            <span className="progress-ring" aria-hidden="true" />
+            <strong>Progress</strong>
+            <small>{nodes.length > 0 ? "Review in progress" : status}</small>
+          </div>
+        </aside>
+        <section className="workspace-main" aria-label="Conflation workspace">
+          <section className="map-column" aria-labelledby="map-heading">
+            <div className="section-heading">
+              <div>
+                <p className="eyebrow">Map</p>
+                <h2 id="map-heading">Candidate map</h2>
+              </div>
+              <p className="workspace-status" role="status" aria-live="polite">
+                {status}
+              </p>
+            </div>
+            {stops.length > 0 ? (
+              <MapView
+                nodes={nodes}
+                stops={stops}
+                matches={matches}
+                reviews={reviews}
+                validStopIds={validStopIds}
+                exactMatchRadiusMeters={profile.autoIdRadiusMeters}
+                focusedStopId={focusedFeatureId}
+                theme={theme}
+                styleUrl={styleUrl.length > 0 ? styleUrl : undefined}
+              />
+            ) : (
+              <div className="panel map-placeholder">
+                <p>Import local GTFS feeds to load the candidate map.</p>
+              </div>
+            )}
           </section>
-        </>
-      )}
+          {stops.length > 0 ? (
+            <section
+              id="review-step"
+              className="review-workspace"
+              aria-labelledby="review-workspace-heading"
+            >
+              <div className="review-workspace-heading">
+                <div>
+                  <p className="eyebrow">Conflation queue</p>
+                  <h2 id="review-workspace-heading">Review items</h2>
+                </div>
+                <span>{reviews.size.toLocaleString()} decisions recorded</span>
+              </div>
+              <ReviewQueue
+                stops={stops}
+                matches={matches}
+                reviews={reviews}
+                nodes={nodes}
+                validStopIds={validStopIds}
+                exactMatchRadiusMeters={profile.autoIdRadiusMeters}
+                onAction={applyAction}
+                focusedFeatureId={focusedFeatureId}
+                onFocusFeature={setFocusedFeatureId}
+              />
+            </section>
+          ) : (
+            <section
+              id="review-step"
+              className="review-empty"
+              aria-labelledby="review-empty-heading"
+            >
+              <p className="eyebrow">Conflation queue</p>
+              <h2 id="review-empty-heading">Review items will appear here</h2>
+              <p>
+                Import a local feed and retrieve OSM candidates to begin
+                comparing stops.
+              </p>
+            </section>
+          )}
+        </section>
+      </div>
     </main>
   );
 }

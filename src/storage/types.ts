@@ -9,6 +9,7 @@ export type StoredSourceFeed = {
   sourceFeedId: string;
   archiveFingerprint: string;
   sourceFeedName: string;
+  fields: readonly string[];
   eligibleStops: readonly EligibleStop[];
   validStopIds: readonly string[];
   diagnostics: FeedImportResult["diagnostics"];

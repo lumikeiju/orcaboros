@@ -53,6 +53,7 @@ export async function buildStagedSession(
       sourceFeedId: item.result.sourceFeedId,
       archiveFingerprint: item.archiveFingerprint,
       sourceFeedName: item.result.sourceFeedName,
+      fields: item.result.fields,
       eligibleStops: item.result.eligibleStops,
       validStopIds: [...item.result.validStopIds].sort(),
       diagnostics: item.result.diagnostics,

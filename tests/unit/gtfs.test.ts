@@ -109,4 +109,34 @@ describe("GTFS stop eligibility", () => {
       })
     ).not.toEqual(expect.arrayContaining([{ key: "operator", value: "" }]));
   });
+
+  it("maps an arbitrary field from the uploaded feed", () => {
+    const profile = validateMappingProfile({
+      schemaVersion: 1,
+      id: "custom-field",
+      name: "Custom field",
+      version: "1.0.0",
+      sourceFeeds: [
+        { id: "US-WA-KCM", displayName: "King County Metro", enabled: true }
+      ],
+      mappingRules: [
+        {
+          key: "ref:zone",
+          value: { kind: "field", field: "custom_zone" }
+        }
+      ],
+      candidateRadiusMeters: 50,
+      autoIdRadiusMeters: 10
+    });
+    const result = createEligibleStop("US-WA-KCM", "King County Metro", {
+      rowNumber: 2,
+      fields: { ...fields, custom_zone: "north" }
+    });
+    if (!("stop" in result)) {
+      throw new Error("fixture stop is invalid");
+    }
+    expect(evaluateMappingRules(profile, result.stop)).toEqual(
+      expect.arrayContaining([{ key: "ref:zone", value: "north" }])
+    );
+  });
 });

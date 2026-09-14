@@ -10,6 +10,7 @@ export type GtfsWorkerImportRequest = {
   type: "import";
   requestId: string;
   archive: File;
+  sourceFeedId?: string;
   definitions: readonly SourceFeedDefinition[];
 };
 

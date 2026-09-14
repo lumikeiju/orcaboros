@@ -43,6 +43,7 @@ async function runImport(request: GtfsWorkerImportRequest): Promise<void> {
   try {
     const imported = await importGtfsArchive(request.archive, {
       definitions: request.definitions,
+      sourceFeedId: request.sourceFeedId,
       signal: controller.signal,
       onProgress: (progress) => {
         post({

@@ -41,12 +41,6 @@ export function deriveSourceFeedId(fileName: string): string {
   }
 
   const sourceFeedId = normalizeSourceFeedId(baseName.slice(0, -4));
-  if (!SOURCE_FEED_ID_PATTERN.test(sourceFeedId)) {
-    throw new Error("The ZIP filename does not contain a valid source-feed ID");
-  }
-  if (sourceFeedId === CONSOLIDATED_SOURCE_FEED_ID) {
-    throw new Error("The consolidated US-WA-PSC feed is not supported");
-  }
   return sourceFeedId;
 }
 

@@ -10,7 +10,8 @@ export type ImportWorkerHandle = {
 export function startArchiveImport(
   archive: File,
   definitions: readonly SourceFeedDefinition[],
-  onProgress?: (stage: string, rowsRead: number) => void
+  onProgress?: (stage: string, rowsRead: number) => void,
+  sourceFeedId?: string
 ): ImportWorkerHandle {
   const worker = new Worker(
     new URL("../../workers/gtfs-import.worker.ts", import.meta.url),
@@ -18,7 +19,9 @@ export function startArchiveImport(
   );
   const requestId = crypto.randomUUID();
   let settled = false;
+  let rejectPromise: ((reason?: unknown) => void) | undefined;
   const promise = new Promise<ImportedArchive>((resolve, reject) => {
+    rejectPromise = reject;
     worker.onmessage = (event: MessageEvent<GtfsWorkerMessage>) => {
       const message = event.data;
       if (message.requestId !== requestId) {
@@ -49,6 +52,7 @@ export function startArchiveImport(
       type: "import",
       requestId,
       archive,
+      sourceFeedId,
       definitions
     });
   });
@@ -56,7 +60,11 @@ export function startArchiveImport(
     promise,
     cancel: () => {
       if (!settled) {
-        worker.postMessage({ type: "cancel", requestId });
+        settled = true;
+        worker.terminate();
+        rejectPromise?.(
+          new DOMException("The GTFS import was cancelled", "AbortError")
+        );
       }
     }
   };
@@ -65,7 +73,9 @@ export function startArchiveImport(
 export function importArchiveInWorker(
   archive: File,
   definitions: readonly SourceFeedDefinition[],
-  onProgress?: (stage: string, rowsRead: number) => void
+  onProgress?: (stage: string, rowsRead: number) => void,
+  sourceFeedId?: string
 ): Promise<ImportedArchive> {
-  return startArchiveImport(archive, definitions, onProgress).promise;
+  return startArchiveImport(archive, definitions, onProgress, sourceFeedId)
+    .promise;
 }

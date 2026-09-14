@@ -25,6 +25,14 @@ describe("streaming GTFS importer", () => {
       ),
       { definitions: STOCK_SOURCE_FEED_DEFINITIONS }
     );
+    expect(imported.result.fields).toEqual([
+      "stop_id",
+      "stop_name",
+      "stop_lat",
+      "stop_lon",
+      "location_type",
+      "parent_station"
+    ]);
     expect(imported.result.eligibleStops).toHaveLength(2);
     expect(imported.result.eligibleStops[0].stopName).toBe('Main, "St\nNorth');
     expect(imported.result.validStopIds).toEqual(
@@ -47,5 +55,20 @@ describe("streaming GTFS importer", () => {
         { definitions: STOCK_SOURCE_FEED_DEFINITIONS }
       )
     ).rejects.toMatchObject({ code: "duplicate-stop-id" });
+  });
+
+  it("uses an edited source feed ID when provided", async () => {
+    const imported = await importGtfsArchive(
+      archiveWithStops(
+        "stop_id,stop_name,stop_lat,stop_lon\nstop-1,Edited,47,-122"
+      ),
+      {
+        definitions: STOCK_SOURCE_FEED_DEFINITIONS,
+        sourceFeedId: "US-WA-ST"
+      }
+    );
+
+    expect(imported.sourceFeedId).toBe("US-WA-ST");
+    expect(imported.result.eligibleStops[0]?.sourceFeedId).toBe("US-WA-ST");
   });
 });

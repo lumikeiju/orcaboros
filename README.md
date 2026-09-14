@@ -18,11 +18,15 @@ bun install
 bun run dev
 ```
 
-Open the local Vite URL in a browser. Feed archives are selected from the local file picker; no remote GTFS source is supported. The default mapping profile is [`src/profiles/puget-sound.json`](src/profiles/puget-sound.json).
+Open the local Vite URL in a browser. Feed archives can be selected together from the local file picker or dragged onto the archive drop area; unsupported ZIPs remain visible with a warning and are skipped during import. No remote GTFS source is supported. The default mapping profile is [`src/profiles/puget-sound.json`](src/profiles/puget-sound.json).
+
+After OSM retrieval, the review queue shows discrepancy results in pages. New GTFS stops, removed OSM identities, and moved stops are shown by default; exact stop ID matches are available through the filter controls.
+
+The candidate map uses a colorblind-friendly palette with redundant marker shapes: blue circles for stops with a candidate match, cyan triangles for identity matches outside the auto-match radius, olive squares for stops with no candidate, purple diamonds for removed identities, and gray crosses for nearby candidate context. At regional zooms these statuses become low-blend density heat layers; zoom in to roughly the intersection scale for individual symbols. A gold ring marks a stop that has been processed in the review queue.
 
 ## Configuration and privacy
 
-The profile editor accepts direct source-field or constant tag mappings only. Overpass-compatible endpoints are entered per browser session in an obscured field and are never persisted in IndexedDB, profiles, routes, logs, or exports. The application does not make an Overpass request until the mapper explicitly starts retrieval. This repository contains no production GTFS archive or OSM response.
+Known feed IDs select their stock mapping profile automatically from the profile dictionary. After import, the profile editor lists every `stops.txt` field and lets the mapper assign an OSM tag key; conditional and constant rules remain available for profile-specific behavior. Overpass-compatible endpoints are entered per browser session in an obscured field and are never persisted in IndexedDB, profiles, routes, logs, or exports. The application does not make an Overpass request until the mapper explicitly starts retrieval. This repository contains no production GTFS archive or OSM response.
 
 See [`docs/architecture.md`](docs/architecture.md) for the data boundaries and [`docs/mapping-profiles.md`](docs/mapping-profiles.md) for the profile format. The accepted architecture decision is recorded in [`docs/adr/0001-browser-first-worker-based-node-conflation.md`](docs/adr/0001-browser-first-worker-based-node-conflation.md).
 
