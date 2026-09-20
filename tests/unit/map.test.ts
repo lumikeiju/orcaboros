@@ -3,7 +3,13 @@ import type { EligibleStop } from "../../src/domain/gtfs";
 import type { CandidateMatch } from "../../src/domain/matching";
 import type { OsmNode } from "../../src/domain/osm";
 import type { FeatureReview } from "../../src/domain/review";
-import { buildMapMarkers, getStopBounds } from "../../src/components/MapView";
+import {
+  buildMapMarkers,
+  DEFAULT_MAP_CENTER,
+  DEFAULT_MAP_ZOOM,
+  getStopBounds,
+  shouldShowZoomNotice
+} from "../../src/components/MapView";
 
 function stop(
   featureId: string,
@@ -49,6 +55,11 @@ function candidateMatch(
 }
 
 describe("map stop extent", () => {
+  it("uses the shared globe view as the default camera", () => {
+    expect(DEFAULT_MAP_CENTER).toEqual([0, 0]);
+    expect(DEFAULT_MAP_ZOOM).toBe(0);
+  });
+
   it("returns the loaded stop bounds", () => {
     expect(
       getStopBounds([
@@ -148,5 +159,12 @@ describe("map stop extent", () => {
       ])
     );
     expect(result.candidateNodes).toEqual([exactNode, movedNode, contextNode]);
+  });
+});
+
+describe("map zoom notice", () => {
+  it("shows below the icon detail zoom and hides at the threshold", () => {
+    expect(shouldShowZoomNotice(10.99)).toBe(true);
+    expect(shouldShowZoomNotice(11)).toBe(false);
   });
 });

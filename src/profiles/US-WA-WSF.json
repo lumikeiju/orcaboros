@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "id": "us-wa-wsf",
+  "name": "Washington State Ferries mapping profile",
+  "version": "1.0.0",
+  "sourceFeeds": [
+    {
+      "id": "US-WA-WSF",
+      "displayName": "Washington State Ferries",
+      "enabled": true,
+      "geometryTarget": "osm",
+      "additionalTags": [
+        {
+          "key": "public_transport",
+          "value": { "kind": "constant", "value": "platform" },
+          "appliesTo": { "locationKinds": ["platform"] }
+        },
+        {
+          "key": "highway",
+          "value": { "kind": "constant", "value": "bus_stop" },
+          "appliesTo": { "locationKinds": ["platform"] }
+        }
+      ]
+    }
+  ],
+  "mappingRules": [
+    {
+      "key": "gtfs:stop_id:US-WA-WSF",
+      "value": { "kind": "field", "field": "stop_id" },
+      "appliesTo": { "sourceFeedIds": ["US-WA-WSF"] }
+    },
+    {
+      "key": "name",
+      "value": { "kind": "field", "field": "stop_name" }
+    }
+  ],
+  "candidateRadiusMeters": 50,
+  "autoIdRadiusMeters": 10
+}

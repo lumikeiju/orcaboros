@@ -74,13 +74,17 @@ describe("deterministic OSM Change export", () => {
           node: {
             id: 42,
             version: 7,
-            latitude: stop.latitude,
-            longitude: stop.longitude,
+            latitude: 47.2,
+            longitude: -122.2,
             tags: {
               name: "Old",
               "gtfs:stop_id:US-WA-KCM": "3",
               "gtfs:stop_id:US-WA-ET": "stale"
             }
+          },
+          coordinates: {
+            latitude: 47.123456789,
+            longitude: -122.123456789
           },
           featureIds: [stop.featureId],
           requiredIdentityTags: [stop.identityTag],

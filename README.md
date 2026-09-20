@@ -18,11 +18,11 @@ bun install
 bun run dev
 ```
 
-Open the local Vite URL in a browser. Feed archives can be selected together from the local file picker or dragged onto the archive drop area; unsupported ZIPs remain visible with a warning and are skipped during import. No remote GTFS source is supported. The default mapping profile is [`src/profiles/puget-sound.json`](src/profiles/puget-sound.json).
+Open the local Vite URL in a browser. Feed archives can be selected together from the local file picker or dragged onto the archive drop area; unsupported ZIPs remain visible with a warning and are skipped during import. No remote GTFS source is supported. Stock mapping profiles are defined per feed in [`src/profiles/`](src/profiles/).
 
-After OSM retrieval, the review queue shows discrepancy results in pages. New GTFS stops, removed OSM identities, and moved stops are shown by default; exact stop ID matches are available through the filter controls.
+After OSM retrieval, the Review Queue shows review results in pages. New GTFS stops, removed OSM identities, and moved stops are shown by default; exact stop ID matches are available through the filter controls. Selecting a feature marker on the map focuses the matching item in the Review Queue, and selecting a queue item focuses it on the map.
 
-The candidate map uses a colorblind-friendly palette with redundant marker shapes: blue circles for stops with a candidate match, cyan triangles for identity matches outside the auto-match radius, olive squares for stops with no candidate, purple diamonds for removed identities, and gray crosses for nearby candidate context. At regional zooms these statuses become low-blend density heat layers; zoom in to roughly the intersection scale for individual symbols. A gold ring marks a stop that has been processed in the review queue.
+The candidate map starts on the shared world globe view (longitude 0, latitude 0, zoom 0) using the documented [MapLibre adaptive globe projection](https://maplibre.org/maplibre-style-spec/types/#use-a-projection-preset) and transitions toward Mercator as you zoom in. It uses a colorblind-friendly palette with redundant marker shapes: blue circles for stops with a candidate match, cyan triangles for identity matches outside the auto-match radius, olive squares for stops with no candidate, purple diamonds for removed identities, and teal crosses for nearby candidate context. At regional zooms these statuses become low-blend density heat layers; zoom in to roughly the intersection scale for individual symbols. A gold ring marks a stop that has been processed in the review queue.
 
 ## Configuration and privacy
 

@@ -1,5 +1,9 @@
-import { type ReactElement, useEffect, useRef } from "react";
-import type { GeoJSONSource, Map as MapLibreMap } from "maplibre-gl";
+import { type ReactElement, useEffect, useRef, useState } from "react";
+import type {
+  GeoJSONSource,
+  Map as MapLibreMap,
+  MapLayerMouseEvent
+} from "maplibre-gl";
 import type { EligibleStop } from "../domain/gtfs";
 import type { CandidateMatch, InitialMatch } from "../domain/matching";
 import type { OsmNode } from "../domain/osm";
@@ -11,10 +15,25 @@ export const MAP_STYLE_URLS = {
   light: "https://tiles.openfreemap.org/styles/positron"
 } as const;
 
+export const DEFAULT_MAP_CENTER: [number, number] = [0, 0];
+export const DEFAULT_MAP_ZOOM = 0;
+
 const MAP_STYLE_NAMES = {
   dark: "Fiord",
   light: "Positron"
 } as const;
+
+const GLOBE_PROJECTION: Parameters<MapLibreMap["setProjection"]>[0] = {
+  type: [
+    "interpolate",
+    ["linear"],
+    ["zoom"],
+    10,
+    "vertical-perspective",
+    12,
+    "mercator"
+  ]
+};
 
 type Theme = keyof typeof MAP_STYLE_URLS;
 
@@ -25,7 +44,8 @@ type MapViewProps = {
   reviews?: ReadonlyMap<string, FeatureReview>;
   validStopIds?: ReadonlyMap<string, ReadonlySet<string>>;
   exactMatchRadiusMeters?: number;
-  focusedStopId?: string;
+  focusedFeatureId?: string;
+  onFeatureClick?: (featureId: string) => void;
   styleUrl?: string;
   theme?: Theme;
 };
@@ -55,6 +75,10 @@ const HEATMAP_KINDS: readonly MapMarkerKind[] = [
 ];
 const DETAIL_ZOOM = 11;
 
+export function shouldShowZoomNotice(zoom: number): boolean {
+  return zoom < DETAIL_ZOOM;
+}
+
 type MarkerShape =
   "circle" | "diamond" | "ring" | "square" | "triangle" | "cross";
 
@@ -67,7 +91,8 @@ const MARKER_VISUALS: Readonly<
   removed: { color: "#AA3377", shape: "diamond" },
   pending: { color: "#94A3B8", shape: "ring" }
 };
-const CANDIDATE_VISUAL = { color: "#94A3B8", shape: "cross" } as const;
+const CANDIDATE_VISUAL = { color: "#67D9C8", shape: "cross" } as const;
+const FOCUS_HALO_COLOR = "#67D9C8";
 type HeatmapColor = {
   low: string;
   medium: string;
@@ -234,11 +259,60 @@ function addStatusHeatmapLayers(
   }
 }
 
+function addFocusHaloLayer(
+  instance: MapLibreMap,
+  id: string,
+  source: string,
+  labelLayerId: string | undefined
+): void {
+  instance.addLayer(
+    {
+      id,
+      type: "circle",
+      source,
+      minzoom: DETAIL_ZOOM,
+      filter: ["==", ["get", "focused"], true],
+      paint: {
+        "circle-color": FOCUS_HALO_COLOR,
+        "circle-opacity": 0.55,
+        "circle-blur": 0.75,
+        "circle-radius": [
+          "interpolate",
+          ["linear"],
+          ["zoom"],
+          DETAIL_ZOOM,
+          10,
+          14,
+          15,
+          18,
+          20
+        ]
+      }
+    },
+    labelLayerId
+  );
+}
+
+function addFocusHaloLayers(
+  instance: MapLibreMap,
+  labelLayerId: string | undefined
+): void {
+  addFocusHaloLayer(
+    instance,
+    "map-focus-candidates",
+    "osm-candidates",
+    labelLayerId
+  );
+  addFocusHaloLayer(instance, "map-focus-markers", "map-markers", labelLayerId);
+}
+
 type MapData = {
   nodes: readonly OsmNode[];
   stops: readonly EligibleStop[];
   markers: readonly MapMarker[];
   candidateNodes: readonly OsmNode[];
+  focusedFeatureId: string | undefined;
+  focusedCandidateNodeIds: ReadonlySet<number>;
 };
 
 type MapFeatureCollection = Parameters<GeoJSONSource["setData"]>[0];
@@ -266,18 +340,24 @@ export function getStopBounds(
   ];
 }
 
-function candidateFeatures(nodes: readonly OsmNode[]) {
+function candidateFeatures(
+  nodes: readonly OsmNode[],
+  focusedNodeIds: ReadonlySet<number>
+) {
   return nodes.map((node) => ({
     type: "Feature" as const,
     geometry: {
       type: "Point" as const,
       coordinates: [node.longitude, node.latitude]
     },
-    properties: { id: node.id }
+    properties: { id: node.id, focused: focusedNodeIds.has(node.id) }
   }));
 }
 
-function markerFeatures(markers: readonly MapMarker[]) {
+function markerFeatures(
+  markers: readonly MapMarker[],
+  focusedFeatureId: string | undefined
+) {
   return markers.map((marker) => ({
     type: "Feature" as const,
     geometry: {
@@ -287,7 +367,8 @@ function markerFeatures(markers: readonly MapMarker[]) {
     properties: {
       id: marker.id,
       kind: marker.kind,
-      processed: marker.processed
+      processed: marker.processed,
+      focused: marker.id === focusedFeatureId
     }
   }));
 }
@@ -383,6 +464,28 @@ export function buildMapMarkers(
   };
 }
 
+function getFocusedCandidateNodeIds(
+  focusedFeatureId: string | undefined,
+  matches: ReadonlyMap<string, InitialMatch>,
+  reviews: ReadonlyMap<string, FeatureReview>
+): ReadonlySet<number> {
+  if (focusedFeatureId === undefined) {
+    return new Set();
+  }
+  const result = matches.get(focusedFeatureId);
+  if (result?.kind === "auto-matched") {
+    return new Set([result.candidate.node.id]);
+  }
+  if (result?.kind !== "review") {
+    return new Set();
+  }
+  const selectedNodeId = reviews.get(focusedFeatureId)?.selectedNodeId;
+  if (selectedNodeId !== undefined) {
+    return new Set([selectedNodeId]);
+  }
+  return new Set(result.candidates.map((candidate) => candidate.node.id));
+}
+
 function updateMapSource(
   instance: MapLibreMap,
   sourceId: string,
@@ -396,37 +499,43 @@ function updateMapSource(
 
 function updateMarkerSource(
   instance: MapLibreMap,
-  markers: readonly MapMarker[]
+  markers: readonly MapMarker[],
+  focusedFeatureId: string | undefined
 ): void {
   updateMapSource(instance, "map-markers", {
     type: "FeatureCollection",
-    features: markerFeatures(markers)
+    features: markerFeatures(markers, focusedFeatureId)
   });
 }
 
 function updateProcessedSource(
   instance: MapLibreMap,
-  markers: readonly MapMarker[]
+  markers: readonly MapMarker[],
+  focusedFeatureId: string | undefined
 ): void {
   updateMapSource(instance, "map-processed", {
     type: "FeatureCollection",
-    features: markerFeatures(markers.filter((marker) => marker.processed))
+    features: markerFeatures(
+      markers.filter((marker) => marker.processed),
+      focusedFeatureId
+    )
   });
 }
 
 function updateCandidateSource(
   instance: MapLibreMap,
-  nodes: readonly OsmNode[]
+  nodes: readonly OsmNode[],
+  focusedNodeIds: ReadonlySet<number>
 ): void {
   updateMapSource(instance, "osm-candidates", {
     type: "FeatureCollection",
-    features: candidateFeatures(nodes)
+    features: candidateFeatures(nodes, focusedNodeIds)
   });
 }
 
-function focusStop(instance: MapLibreMap, stop: EligibleStop): void {
+function focusMarker(instance: MapLibreMap, marker: MapMarker): void {
   instance.flyTo({
-    center: [stop.longitude, stop.latitude],
+    center: [marker.longitude, marker.latitude],
     zoom: Math.max(instance.getZoom(), 15),
     duration: 700,
     essential: true
@@ -466,7 +575,8 @@ export function MapView({
   reviews = new Map(),
   validStopIds = new Map(),
   exactMatchRadiusMeters = Number.POSITIVE_INFINITY,
-  focusedStopId,
+  focusedFeatureId,
+  onFeatureClick,
   styleUrl,
   theme = "dark"
 }: MapViewProps): ReactElement {
@@ -474,6 +584,7 @@ export function MapView({
   const container = useRef<HTMLDivElement>(null);
   const map = useRef<MapLibreMap | null>(null);
   const mapLoaded = useRef(false);
+  const [showZoomNotice, setShowZoomNotice] = useState(false);
   const derivedMapData = buildMapMarkers(
     stops,
     nodes,
@@ -482,23 +593,35 @@ export function MapView({
     validStopIds,
     exactMatchRadiusMeters
   );
+  const focusedCandidateNodeIds = getFocusedCandidateNodeIds(
+    focusedFeatureId,
+    matches,
+    reviews
+  );
   const mapData = useRef<MapData>({
     nodes,
     stops,
     markers: derivedMapData.markers,
-    candidateNodes: derivedMapData.candidateNodes
+    candidateNodes: derivedMapData.candidateNodes,
+    focusedFeatureId,
+    focusedCandidateNodeIds
   });
-  const focusedStopIdRef = useRef(focusedStopId);
+  const focusedFeatureIdRef = useRef(focusedFeatureId);
+  const onFeatureClickRef = useRef(onFeatureClick);
   mapData.current = {
     nodes,
     stops,
     markers: derivedMapData.markers,
-    candidateNodes: derivedMapData.candidateNodes
+    candidateNodes: derivedMapData.candidateNodes,
+    focusedFeatureId,
+    focusedCandidateNodeIds
   };
-  focusedStopIdRef.current = focusedStopId;
+  focusedFeatureIdRef.current = focusedFeatureId;
+  onFeatureClickRef.current = onFeatureClick;
 
   useEffect(() => {
     let disposed = false;
+    setShowZoomNotice(false);
     mapLoaded.current = false;
     void import("maplibre-gl").then((module) => {
       if (disposed || container.current === null) {
@@ -507,12 +630,20 @@ export function MapView({
       const instance = new module.Map({
         container: container.current,
         style: resolvedStyleUrl,
-        center: [-122.33, 47.61],
-        zoom: 9,
+        center: DEFAULT_MAP_CENTER,
+        zoom: DEFAULT_MAP_ZOOM,
+        bearing: 0,
+        pitch: 0,
         dragRotate: false,
         pitchWithRotate: false
       });
       map.current = instance;
+      instance.once("style.load", () => {
+        if (disposed) {
+          return;
+        }
+        instance.setProjection(GLOBE_PROJECTION);
+      });
       instance.on("load", () => {
         if (disposed) {
           return;
@@ -525,7 +656,10 @@ export function MapView({
           type: "geojson",
           data: {
             type: "FeatureCollection",
-            features: markerFeatures(mapData.current.markers)
+            features: markerFeatures(
+              mapData.current.markers,
+              mapData.current.focusedFeatureId
+            )
           }
         });
         instance.addSource("map-processed", {
@@ -533,7 +667,8 @@ export function MapView({
           data: {
             type: "FeatureCollection",
             features: markerFeatures(
-              mapData.current.markers.filter((marker) => marker.processed)
+              mapData.current.markers.filter((marker) => marker.processed),
+              mapData.current.focusedFeatureId
             )
           }
         });
@@ -541,10 +676,14 @@ export function MapView({
           type: "geojson",
           data: {
             type: "FeatureCollection",
-            features: candidateFeatures(mapData.current.candidateNodes)
+            features: candidateFeatures(
+              mapData.current.candidateNodes,
+              mapData.current.focusedCandidateNodeIds
+            )
           }
         });
         addStatusHeatmapLayers(instance, labelLayerId);
+        addFocusHaloLayers(instance, labelLayerId);
         instance.addLayer(
           {
             id: "osm-candidates",
@@ -555,7 +694,15 @@ export function MapView({
               "icon-image": "map-marker-candidate",
               "icon-allow-overlap": true,
               "icon-ignore-placement": true,
-              "icon-size": 0.4
+              "icon-size": [
+                "interpolate",
+                ["linear"],
+                ["zoom"],
+                DETAIL_ZOOM,
+                0.75,
+                14,
+                0.95
+              ]
             }
           },
           labelLayerId
@@ -574,6 +721,9 @@ export function MapView({
             }
           },
           labelLayerId
+        );
+        const markerLayerIds = MARKER_KINDS.map(
+          (markerKind) => `map-marker-${markerKind}`
         );
         for (const markerKind of MARKER_KINDS) {
           instance.addLayer(
@@ -609,12 +759,33 @@ export function MapView({
             labelLayerId
           );
         }
+        const interactiveLayerIds = [...markerLayerIds, "map-processed"];
+        const handleMarkerClick = (event: MapLayerMouseEvent): void => {
+          const featureId = event.features?.find(
+            (feature) => typeof feature.properties?.id === "string"
+          )?.properties?.id;
+          if (typeof featureId === "string") {
+            onFeatureClickRef.current?.(featureId);
+          }
+        };
+        instance.on("click", interactiveLayerIds, handleMarkerClick);
+        instance.on("mouseenter", interactiveLayerIds, () => {
+          instance.getCanvas().style.cursor = "pointer";
+        });
+        instance.on("mouseleave", interactiveLayerIds, () => {
+          instance.getCanvas().style.cursor = "";
+        });
+        const handleZoom = (): void => {
+          setShowZoomNotice(shouldShowZoomNotice(instance.getZoom()));
+        };
+        instance.on("zoom", handleZoom);
         mapLoaded.current = true;
-        const focusedStop = mapData.current.stops.find(
-          (stop) => stop.featureId === focusedStopIdRef.current
+        handleZoom();
+        const focusedMarker = mapData.current.markers.find(
+          (marker) => marker.id === focusedFeatureIdRef.current
         );
-        if (focusedStop !== undefined) {
-          focusStop(instance, focusedStop);
+        if (focusedMarker !== undefined) {
+          focusMarker(instance, focusedMarker);
         } else {
           fitToStops(instance, mapData.current.stops);
         }
@@ -630,11 +801,31 @@ export function MapView({
 
   useEffect(() => {
     if (mapLoaded.current && map.current !== null) {
-      updateMarkerSource(map.current, mapData.current.markers);
-      updateProcessedSource(map.current, mapData.current.markers);
-      updateCandidateSource(map.current, mapData.current.candidateNodes);
+      updateMarkerSource(
+        map.current,
+        mapData.current.markers,
+        mapData.current.focusedFeatureId
+      );
+      updateProcessedSource(
+        map.current,
+        mapData.current.markers,
+        mapData.current.focusedFeatureId
+      );
+      updateCandidateSource(
+        map.current,
+        mapData.current.candidateNodes,
+        mapData.current.focusedCandidateNodeIds
+      );
     }
-  }, [exactMatchRadiusMeters, matches, nodes, reviews, stops, validStopIds]);
+  }, [
+    exactMatchRadiusMeters,
+    focusedFeatureId,
+    matches,
+    nodes,
+    reviews,
+    stops,
+    validStopIds
+  ]);
 
   useEffect(() => {
     if (mapLoaded.current && map.current !== null) {
@@ -646,15 +837,25 @@ export function MapView({
     if (
       !mapLoaded.current ||
       map.current === null ||
-      focusedStopId === undefined
+      focusedFeatureId === undefined
     ) {
       return;
     }
-    const focusedStop = stops.find((stop) => stop.featureId === focusedStopId);
-    if (focusedStop !== undefined) {
-      focusStop(map.current, focusedStop);
+    const focusedMarker = derivedMapData.markers.find(
+      (marker) => marker.id === focusedFeatureId
+    );
+    if (focusedMarker !== undefined) {
+      focusMarker(map.current, focusedMarker);
     }
-  }, [focusedStopId, stops]);
+  }, [
+    exactMatchRadiusMeters,
+    focusedFeatureId,
+    matches,
+    nodes,
+    reviews,
+    stops,
+    validStopIds
+  ]);
 
   return (
     <div className="map-shell">
@@ -664,6 +865,21 @@ export function MapView({
         role="img"
         aria-label="OpenStreetMap candidate map"
       />
+      {showZoomNotice && (
+        <button
+          type="button"
+          className="map-zoom-notice"
+          aria-label="Zoom map in to view data"
+          onClick={() =>
+            map.current?.zoomTo(DETAIL_ZOOM, {
+              duration: 500,
+              essential: true
+            })
+          }
+        >
+          Zoom in to view data
+        </button>
+      )}
       <aside className="map-legend" aria-labelledby="map-legend-heading">
         <h3 id="map-legend-heading">Map legend</h3>
         <ul>

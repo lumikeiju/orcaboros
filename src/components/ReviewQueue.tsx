@@ -4,6 +4,7 @@ import {
   type ReactElement,
   useEffect,
   useMemo,
+  useRef,
   useState
 } from "react";
 import { CandidateMatch, InitialMatch } from "../domain/matching";
@@ -35,6 +36,10 @@ type ReviewQueueItem = StopReviewItem | RemovedReviewItem;
 
 type ReviewFilters = Record<ReviewCategory, boolean>;
 
+function reviewQueueItemFeatureId(item: ReviewQueueItem): string {
+  return item.kind === "stop" ? item.stop.featureId : `removed-${item.node.id}`;
+}
+
 type ReviewQueueProps = {
   stops: readonly EligibleStop[];
   matches: ReadonlyMap<string, InitialMatch>;
@@ -65,6 +70,7 @@ export function ReviewQueue({
     exact: false
   });
   const [page, setPage] = useState(1);
+  const focusedCardRef = useRef<HTMLLIElement>(null);
 
   const items = useMemo<readonly ReviewQueueItem[]>(() => {
     const stopItems = stops.map((stop): StopReviewItem => {
@@ -120,6 +126,9 @@ export function ReviewQueue({
     return counts;
   }, [items]);
   const visibleItems = items.filter((item) => filters[item.category]);
+  const focusedVisibleIndex = visibleItems.findIndex(
+    (item) => reviewQueueItemFeatureId(item) === focusedFeatureId
+  );
   const pageCount = Math.max(
     1,
     Math.ceil(visibleItems.length / REVIEW_PAGE_SIZE)
@@ -131,12 +140,37 @@ export function ReviewQueue({
   );
   const selectedItem =
     pageItems.find(
-      (item) => item.kind === "stop" && item.stop.featureId === focusedFeatureId
+      (item) => reviewQueueItemFeatureId(item) === focusedFeatureId
     ) ?? pageItems[0];
 
   useEffect(() => {
-    setPage(1);
-  }, [filters]);
+    if (focusedFeatureId === undefined) {
+      return;
+    }
+    const focusedItem = items.find(
+      (item) => reviewQueueItemFeatureId(item) === focusedFeatureId
+    );
+    if (focusedItem !== undefined && !filters[focusedItem.category]) {
+      setFilters((current) => ({
+        ...current,
+        [focusedItem.category]: true
+      }));
+    }
+  }, [filters, focusedFeatureId, items]);
+
+  useEffect(() => {
+    const nextPage =
+      focusedVisibleIndex >= 0
+        ? Math.floor(focusedVisibleIndex / REVIEW_PAGE_SIZE) + 1
+        : 1;
+    setPage((current) => (current === nextPage ? current : nextPage));
+  }, [filters, focusedVisibleIndex]);
+
+  useEffect(() => {
+    if (focusedFeatureId !== undefined) {
+      focusedCardRef.current?.focus();
+    }
+  }, [currentPage, focusedFeatureId]);
 
   function toggleFilter(category: ReviewCategory): void {
     setFilters((current) => ({
@@ -174,6 +208,17 @@ export function ReviewQueue({
     }
   }
 
+  function handleDecisionAction(featureId: string, action: ReviewAction): void {
+    onAction(featureId, action);
+    const currentIndex = visibleItems.findIndex(
+      (item) => reviewQueueItemFeatureId(item) === featureId
+    );
+    const nextItem = visibleItems[currentIndex + 1];
+    if (nextItem !== undefined) {
+      onFocusFeature(reviewQueueItemFeatureId(nextItem));
+    }
+  }
+
   function renderStopCard(item: StopReviewItem): ReactElement {
     const { stop, result, review } = item;
     return (
@@ -184,6 +229,7 @@ export function ReviewQueue({
         }`}
         role="button"
         tabIndex={0}
+        ref={focusedFeatureId === stop.featureId ? focusedCardRef : undefined}
         aria-label={`Focus ${stop.stopNameExpanded} on the map`}
         aria-pressed={focusedFeatureId === stop.featureId}
         onClick={(event) => handleCardClick(event, stop.featureId)}
@@ -321,10 +367,20 @@ export function ReviewQueue({
   }
 
   function renderRemovedCard(item: RemovedReviewItem): ReactElement {
+    const featureId = reviewQueueItemFeatureId(item);
     return (
       <li
-        key={`removed-${item.node.id}`}
-        className="review-card review-card-removed"
+        key={featureId}
+        className={`review-card review-card-removed${
+          focusedFeatureId === featureId ? " is-focused" : ""
+        }`}
+        role="button"
+        tabIndex={0}
+        ref={focusedFeatureId === featureId ? focusedCardRef : undefined}
+        aria-label={`Focus OSM node ${item.node.id} on the map`}
+        aria-pressed={focusedFeatureId === featureId}
+        onClick={(event) => handleCardClick(event, featureId)}
+        onKeyDown={(event) => handleCardKeyDown(event, featureId)}
       >
         <div className="review-card-heading">
           <div>
@@ -370,12 +426,7 @@ export function ReviewQueue({
       );
     }
     const { stop, result, review } = item;
-    const candidate =
-      result?.kind === "auto-matched"
-        ? result.candidate
-        : result?.kind === "review"
-          ? result.candidates[0]
-          : undefined;
+    const candidate = getPrimaryCandidate(result);
     return (
       <article className="review-detail">
         <div className="review-detail-heading">
@@ -429,84 +480,97 @@ export function ReviewQueue({
             </div>
           </dl>
         </div>
-        <div className="button-row review-detail-actions">
-          {candidate !== undefined && (
-            <button
-              type="button"
-              onClick={() =>
-                onAction(stop.featureId, {
-                  type: "select-match",
-                  nodeId: candidate.node.id
-                })
-              }
-            >
-              Accept match
-            </button>
-          )}
-          <button
-            type="button"
-            className="secondary"
-            onClick={() => onAction(stop.featureId, { type: "skip" })}
-          >
-            Reject
-          </button>
-          <button
-            type="button"
-            className="secondary"
-            onClick={() =>
-              onAction(stop.featureId, {
-                type: "select-create",
-                latitude: stop.latitude,
-                longitude: stop.longitude
-              })
-            }
-          >
-            Modify
-          </button>
-        </div>
       </article>
     );
   }
 
-  return (
-    <section className="panel" aria-labelledby="review-heading">
-      <h2 id="review-heading">Discrepancy queue ({items.length})</h2>
-      <p>
-        Every feature must be explicitly matched, created, or skipped before an
-        export can be enabled. Name and distance evidence never auto-selects.
-      </p>
-      <fieldset className="review-filters">
-        <legend>Show results</legend>
-        {(["new", "removed", "moved", "exact"] as const).map((category) => (
+  function renderDecisionActions(item: StopReviewItem): ReactElement {
+    const candidate = getPrimaryCandidate(item.result);
+    return (
+      <div className="review-decision-actions">
+        {candidate !== undefined && (
           <button
             type="button"
-            className={`review-filter-toggle${
-              filters[category] ? " is-on" : ""
-            }`}
-            role="switch"
-            aria-checked={filters[category]}
-            aria-label={`Show ${category} results`}
-            key={category}
-            onClick={() => toggleFilter(category)}
+            className="decision-accept"
+            onClick={() =>
+              handleDecisionAction(item.stop.featureId, {
+                type: "select-match",
+                nodeId: candidate.node.id
+              })
+            }
           >
-            <span className="review-toggle-track" aria-hidden="true">
-              <span className="review-toggle-thumb" />
-            </span>
-            <span>
-              {category} ({categoryCounts[category]})
-            </span>
+            Accept match
           </button>
-        ))}
-      </fieldset>
-      <p className="review-summary" role="status">
-        {visibleItems.length === 0
-          ? "No results match the selected filters."
-          : `Showing ${(currentPage - 1) * REVIEW_PAGE_SIZE + 1}-${Math.min(
-              currentPage * REVIEW_PAGE_SIZE,
-              visibleItems.length
-            )} of ${visibleItems.length} results`}
-      </p>
-      <div className="review-queue-grid">
+        )}
+        <button
+          type="button"
+          className="decision-reject"
+          onClick={() =>
+            handleDecisionAction(item.stop.featureId, { type: "skip" })
+          }
+        >
+          Reject
+        </button>
+        <button
+          type="button"
+          className="decision-modify"
+          onClick={() =>
+            handleDecisionAction(item.stop.featureId, {
+              type: "select-create",
+              latitude: item.stop.latitude,
+              longitude: item.stop.longitude
+            })
+          }
+        >
+          Modify
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="review-columns">
+      <section
+        className="panel review-queue-panel"
+        aria-labelledby="review-heading"
+      >
+        <h2 id="review-heading">Review Queue ({items.length})</h2>
+        <p>
+          Every feature must be explicitly matched, created, or skipped before
+          an export can be enabled. Name and distance evidence never
+          auto-selects.
+        </p>
+        <fieldset className="review-filters">
+          <legend>Show results</legend>
+          {(["new", "removed", "moved", "exact"] as const).map((category) => (
+            <button
+              type="button"
+              className={`review-filter-toggle${
+                filters[category] ? " is-on" : ""
+              }`}
+              role="switch"
+              aria-checked={filters[category]}
+              aria-label={`Show ${category} results`}
+              key={category}
+              onClick={() => toggleFilter(category)}
+            >
+              <span className="review-toggle-track" aria-hidden="true">
+                <span className="review-toggle-thumb" />
+              </span>
+              <span>
+                {category} ({categoryCounts[category]})
+              </span>
+            </button>
+          ))}
+        </fieldset>
+        <p className="review-summary" role="status">
+          {visibleItems.length === 0
+            ? "No results match the selected filters."
+            : `Showing ${(currentPage - 1) * REVIEW_PAGE_SIZE + 1}-${Math.min(
+                currentPage * REVIEW_PAGE_SIZE,
+                visibleItems.length
+              )} of ${visibleItems.length} results`}
+        </p>
         <ol className="review-list">
           {pageItems.map((item) =>
             item.kind === "removed"
@@ -514,35 +578,63 @@ export function ReviewQueue({
               : renderStopCard(item)
           )}
         </ol>
+        {pageCount > 1 && (
+          <nav className="review-pagination" aria-label="Review result pages">
+            <button
+              type="button"
+              className="secondary"
+              onClick={() => setPage((current) => Math.max(1, current - 1))}
+              disabled={currentPage === 1}
+            >
+              Previous
+            </button>
+            <span aria-live="polite">
+              Page {currentPage} of {pageCount}
+            </span>
+            <button
+              type="button"
+              className="secondary"
+              onClick={() =>
+                setPage((current) => Math.min(pageCount, current + 1))
+              }
+              disabled={currentPage === pageCount}
+            >
+              Next
+            </button>
+          </nav>
+        )}
+      </section>
+      <section
+        className="review-comparison"
+        aria-labelledby="comparison-heading"
+      >
+        {selectedItem?.kind === "stop" && (
+          <section
+            className="review-decision"
+            aria-labelledby="decision-heading"
+          >
+            <h2 id="decision-heading">Decision</h2>
+            {renderDecisionActions(selectedItem)}
+          </section>
+        )}
+        <h2 id="comparison-heading">Comparison</h2>
         {selectedItem !== undefined && renderDetail(selectedItem)}
-      </div>
-      {pageCount > 1 && (
-        <nav className="review-pagination" aria-label="Review result pages">
-          <button
-            type="button"
-            className="secondary"
-            onClick={() => setPage((current) => Math.max(1, current - 1))}
-            disabled={currentPage === 1}
-          >
-            Previous
-          </button>
-          <span aria-live="polite">
-            Page {currentPage} of {pageCount}
-          </span>
-          <button
-            type="button"
-            className="secondary"
-            onClick={() =>
-              setPage((current) => Math.min(pageCount, current + 1))
-            }
-            disabled={currentPage === pageCount}
-          >
-            Next
-          </button>
-        </nav>
-      )}
-    </section>
+      </section>
+      <div className="review-column-empty" aria-hidden="true" />
+    </div>
   );
+}
+
+function getPrimaryCandidate(
+  result: InitialMatch | undefined
+): CandidateMatch | undefined {
+  if (result?.kind === "auto-matched") {
+    return result.candidate;
+  }
+  if (result?.kind === "review") {
+    return result.candidates[0];
+  }
+  return undefined;
 }
 
 function findExactIdentityCandidate(

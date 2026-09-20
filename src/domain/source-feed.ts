@@ -1,22 +1,72 @@
 export const CONSOLIDATED_SOURCE_FEED_ID = "US-WA-PSC";
 
+export type GeometryTarget = "gtfs" | "osm";
+
+export const DEFAULT_GEOMETRY_TARGET: GeometryTarget = "osm";
+
 export type SourceFeedDefinition = {
   id: string;
   displayName: string;
   enabled: boolean;
+  geometryTarget: GeometryTarget;
   metadata?: Readonly<Record<string, string>>;
 };
 
 export const STOCK_SOURCE_FEED_DEFINITIONS: readonly SourceFeedDefinition[] = [
-  { id: "US-WA-CT", displayName: "Community Transit", enabled: true },
-  { id: "US-WA-ET", displayName: "Everett Transit", enabled: true },
-  { id: "US-WA-IT", displayName: "Intercity Transit", enabled: true },
-  { id: "US-WA-KCM", displayName: "King County Metro", enabled: true },
-  { id: "US-WA-KT", displayName: "Kitsap Transit", enabled: true },
-  { id: "US-WA-PT", displayName: "Pierce Transit", enabled: true },
-  { id: "US-WA-SCM", displayName: "Seattle Center Monorail", enabled: true },
-  { id: "US-WA-ST", displayName: "Sound Transit", enabled: true },
-  { id: "US-WA-WSF", displayName: "Washington State Ferries", enabled: true }
+  {
+    id: "US-WA-CT",
+    displayName: "Community Transit",
+    enabled: true,
+    geometryTarget: DEFAULT_GEOMETRY_TARGET
+  },
+  {
+    id: "US-WA-ET",
+    displayName: "Everett Transit",
+    enabled: true,
+    geometryTarget: DEFAULT_GEOMETRY_TARGET
+  },
+  {
+    id: "US-WA-IT",
+    displayName: "Intercity Transit",
+    enabled: true,
+    geometryTarget: DEFAULT_GEOMETRY_TARGET
+  },
+  {
+    id: "US-WA-KCM",
+    displayName: "King County Metro",
+    enabled: true,
+    geometryTarget: DEFAULT_GEOMETRY_TARGET
+  },
+  {
+    id: "US-WA-KT",
+    displayName: "Kitsap Transit",
+    enabled: true,
+    geometryTarget: DEFAULT_GEOMETRY_TARGET
+  },
+  {
+    id: "US-WA-PT",
+    displayName: "Pierce Transit",
+    enabled: true,
+    geometryTarget: DEFAULT_GEOMETRY_TARGET
+  },
+  {
+    id: "US-WA-SCM",
+    displayName: "Seattle Center Monorail",
+    enabled: true,
+    geometryTarget: DEFAULT_GEOMETRY_TARGET
+  },
+  {
+    id: "US-WA-ST",
+    displayName: "Sound Transit",
+    enabled: true,
+    geometryTarget: DEFAULT_GEOMETRY_TARGET
+  },
+  {
+    id: "US-WA-WSF",
+    displayName: "Washington State Ferries",
+    enabled: true,
+    geometryTarget: DEFAULT_GEOMETRY_TARGET
+  }
 ];
 
 const SOURCE_FEED_ID_PATTERN = /^[A-Z0-9]+(?:-[A-Z0-9]+)*$/u;

@@ -27,6 +27,8 @@ export type GtfsWorkerMessage =
       requestId: string;
       stage: string;
       rowsRead: number;
+      bytesRead: number;
+      totalBytes?: number;
     }
   | {
       type: "complete";

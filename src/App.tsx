@@ -1,15 +1,27 @@
-import { type ReactElement, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type CSSProperties,
+  type ReactElement,
+  useEffect,
+  useMemo,
+  useRef,
+  useState
+} from "react";
 import { SourcePicker, SelectedArchive } from "./components/SourcePicker";
 import { ProgressIndicator } from "./components/ProgressIndicator";
 import { ProfileEditor } from "./components/ProfileEditor";
 import { ReviewQueue } from "./components/ReviewQueue";
 import { MapView } from "./components/MapView";
 import { ThemeToggle, type Theme } from "./components/ThemeToggle";
+import { ResizeHandle } from "./components/ResizeHandle";
+import {
+  OsmRequestResult,
+  type OsmRequestResultState
+} from "./components/OsmRequestResult";
 import {
   createCustomProfileForFeedIds,
   fingerprintProfile,
-  getProfileForFeedIds,
-  getPugetSoundProfile
+  getDefaultProfile,
+  getProfileForFeedIds
 } from "./profiles";
 import { MappingProfile } from "./domain/profile";
 import { EligibleStop, FeedImportResult } from "./domain/gtfs";
@@ -22,7 +34,12 @@ import {
 } from "./domain/review";
 import { InitialMatch, validateSelectedClaims } from "./domain/matching";
 import { OsmNode } from "./domain/osm";
-import { ChangeDraft, DraftCreate, DraftModify } from "./domain/change";
+import {
+  ChangeDraft,
+  coordinatesForGeometryTarget,
+  DraftCreate,
+  DraftModify
+} from "./domain/change";
 import {
   ImportWorkerHandle,
   startArchiveImport
@@ -30,6 +47,7 @@ import {
 import {
   buildOverpassRequests,
   identityKeysForSourceFeeds,
+  OverpassRequestError,
   retrieveOverpassNodes,
   workingBoundsForStops
 } from "./infrastructure/osm";
@@ -42,6 +60,7 @@ import {
 import { serializeOsmChange } from "./infrastructure/osm/change-export";
 import {
   CONSOLIDATED_SOURCE_FEED_ID,
+  DEFAULT_GEOMETRY_TARGET,
   identityTagKey,
   normalizeSourceFeedId,
   STOCK_SOURCE_FEED_DEFINITIONS
@@ -53,6 +72,7 @@ import {
   buildStagedSession,
   stageAndActivateSession
 } from "./storage";
+import packageMetadata from "../package.json";
 
 type ImportProgressState = {
   sourceFeedId: string;
@@ -60,6 +80,8 @@ type ImportProgressState = {
   totalArchives: number;
   stage: string;
   rowsRead: number;
+  bytesRead: number;
+  totalBytes: number;
 };
 
 type OsmProgressState = {
@@ -70,11 +92,27 @@ type OsmProgressState = {
 
 type WorkflowStepId = "upload" | "profile" | "retrieve" | "review" | "export";
 
+const MIN_RAIL_WIDTH = 18;
+const MAX_RAIL_WIDTH = 36;
+const MIN_REVIEW_HEIGHT = 20;
+const MAX_REVIEW_HEIGHT = 55;
+
+function formatBytes(bytes: number): string {
+  const units = ["B", "KiB", "MiB", "GiB"] as const;
+  let value = Math.max(0, bytes);
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  const rounded =
+    unitIndex === 0 || value >= 10 ? Math.round(value) : value.toFixed(1);
+  return `${rounded} ${units[unitIndex]}`;
+}
+
 export function App(): ReactElement {
   const [theme, setTheme] = useState<Theme>("dark");
-  const [profile, setProfile] = useState<MappingProfile>(
-    getPugetSoundProfile()
-  );
+  const [profile, setProfile] = useState<MappingProfile>(getDefaultProfile());
   const [archives, setArchives] = useState<readonly SelectedArchive[]>([]);
   const [selectionErrors, setSelectionErrors] = useState<readonly string[]>([]);
   const [stops, setStops] = useState<readonly EligibleStop[]>([]);
@@ -85,6 +123,7 @@ export function App(): ReactElement {
     ReadonlyMap<string, ReadonlySet<string>>
   >(new Map());
   const [nodes, setNodes] = useState<readonly OsmNode[]>([]);
+  const [retrievalComplete, setRetrievalComplete] = useState(false);
   const [matches, setMatches] = useState<ReadonlyMap<string, InitialMatch>>(
     new Map()
   );
@@ -95,6 +134,8 @@ export function App(): ReactElement {
   const [openWorkflowStep, setOpenWorkflowStep] = useState<
     WorkflowStepId | undefined
   >("upload");
+  const [railWidth, setRailWidth] = useState(25);
+  const [reviewHeight, setReviewHeight] = useState(33);
   const [endpoint, setEndpoint] = useState("");
   const [styleUrl, setStyleUrl] = useState("");
   const [status, setStatus] = useState("Select local feeds to begin.");
@@ -106,6 +147,8 @@ export function App(): ReactElement {
   const importProgressThrottle = useRef(createProgressThrottleState());
   const [osmRequestActive, setOsmRequestActive] = useState(false);
   const [osmProgress, setOsmProgress] = useState<OsmProgressState>();
+  const [osmRequestResult, setOsmRequestResult] =
+    useState<OsmRequestResultState>();
   const osmAbortController = useRef<AbortController | null>(null);
   const matchingProgressThrottle = useRef(createProgressThrottleState());
   const repository = useMemo<SessionRepository>(
@@ -124,6 +167,16 @@ export function App(): ReactElement {
     () => [...new Set(feedSummaries.flatMap((summary) => summary.fields))],
     [feedSummaries]
   );
+  const exampleRowCounts = useMemo(
+    () =>
+      new Map(
+        feedSummaries.map((summary) => [
+          summary.sourceFeedId,
+          summary.counts.totalRows
+        ])
+      ),
+    [feedSummaries]
+  );
 
   useEffect(() => {
     let active = true;
@@ -133,7 +186,13 @@ export function App(): ReactElement {
         if (!active || session === undefined) {
           return;
         }
-        setProfile(session.profile);
+        setProfile({
+          ...session.profile,
+          sourceFeeds: session.profile.sourceFeeds.map((sourceFeed) => ({
+            ...sourceFeed,
+            geometryTarget: sourceFeed.geometryTarget ?? DEFAULT_GEOMETRY_TARGET
+          }))
+        });
         const restoredStops = session.sourceFeeds.flatMap(
           (source) => source.eligibleStops
         );
@@ -171,6 +230,9 @@ export function App(): ReactElement {
             new Map(session.reviews.map((review) => [review.featureId, review]))
           );
         }
+        setRetrievalComplete(
+          session.osmSnapshot !== undefined && session.reviews !== undefined
+        );
         setStatus(
           `Restored ${restoredStops.length} eligible stops from the active session.`
         );
@@ -208,22 +270,35 @@ export function App(): ReactElement {
     const skippedArchiveCount = archives.length - importableArchives.length;
     setLoading(true);
     setError(undefined);
+    setOsmRequestResult(undefined);
     setImportActive(true);
+    setStatus(
+      `Starting GTFS import for ${importableArchives.length} source feed${
+        importableArchives.length === 1 ? "" : "s"
+      }.`
+    );
     try {
       const imported = [];
       for (const [archiveIndex, archive] of importableArchives.entries()) {
         importProgressThrottle.current = createProgressThrottleState();
+        setStatus(
+          `${archive.sourceFeedId}: fingerprinting (0 B of ${formatBytes(
+            archive.file.size
+          )})`
+        );
         setImportProgress({
           sourceFeedId: archive.sourceFeedId,
           archiveIndex: archiveIndex + 1,
           totalArchives: importableArchives.length,
-          stage: "starting",
-          rowsRead: 0
+          stage: "fingerprinting",
+          rowsRead: 0,
+          bytesRead: 0,
+          totalBytes: archive.file.size
         });
         const handle = startArchiveImport(
           archive.file,
           enabledDefinitions,
-          (stage, rowsRead) => {
+          (stage, rowsRead, bytesRead, totalBytes) => {
             if (
               !shouldPublishProgress(
                 importProgressThrottle.current,
@@ -233,13 +308,22 @@ export function App(): ReactElement {
             ) {
               return;
             }
-            setStatus(`${archive.sourceFeedId}: ${stage} (${rowsRead} rows)`);
+            const progressTotalBytes = totalBytes ?? archive.file.size;
+            setStatus(
+              stage === "fingerprinting"
+                ? `${archive.sourceFeedId}: fingerprinting (${formatBytes(
+                    bytesRead
+                  )} of ${formatBytes(progressTotalBytes)})`
+                : `${archive.sourceFeedId}: ${stage} (${rowsRead} rows)`
+            );
             setImportProgress({
               sourceFeedId: archive.sourceFeedId,
               archiveIndex: archiveIndex + 1,
               totalArchives: importableArchives.length,
               stage,
-              rowsRead
+              rowsRead,
+              bytesRead,
+              totalBytes: progressTotalBytes
             });
           },
           archive.sourceFeedId
@@ -263,6 +347,7 @@ export function App(): ReactElement {
         )
       );
       setNodes([]);
+      setRetrievalComplete(false);
       setMatches(new Map());
       setReviews(new Map());
       setFocusedFeatureId(undefined);
@@ -304,9 +389,11 @@ export function App(): ReactElement {
     nextArchives: readonly SelectedArchive[],
     errors: readonly string[]
   ): void {
+    setRetrievalComplete(false);
     setArchives(nextArchives);
     setSelectionErrors(errors);
     setFeedSummaries([]);
+    setOsmRequestResult(undefined);
     setError(errors.length > 0 ? errors.join("; ") : undefined);
     if (errors.length === 0 && nextArchives.length > 0) {
       const selectableFeedIds = nextArchives
@@ -338,8 +425,10 @@ export function App(): ReactElement {
       setError("Import eligible stops before retrieving OSM candidates.");
       return;
     }
+    setRetrievalComplete(false);
     setLoading(true);
     setError(undefined);
+    setOsmRequestResult(undefined);
     const controller = new AbortController();
     osmAbortController.current = controller;
     setOsmRequestActive(true);
@@ -371,6 +460,15 @@ export function App(): ReactElement {
         });
       }
       const retrieved = [...nodesById.values()];
+      setOsmRequestResult(
+        retrieved.length === 0
+          ? { kind: "empty", requestCount: requests.length }
+          : {
+              kind: "success",
+              nodeCount: retrieved.length,
+              requestCount: requests.length
+            }
+      );
       const activeSession = await repository.getActiveSession();
       if (activeSession === undefined) {
         throw new Error("The active GTFS session is no longer available");
@@ -419,51 +517,59 @@ export function App(): ReactElement {
         }
       );
       setMatches(initial);
-      setReviews(
-        new Map(
-          stops.map((stop) => {
-            const result = initial.get(stop.featureId);
-            const node =
-              result?.kind === "auto-matched"
-                ? result.candidate.node
-                : undefined;
-            const mappedTags = mapStopToOsmTags(profile, stop);
-            const staleKeys =
-              node === undefined
-                ? []
-                : staleIdentityKeys(
-                    node,
-                    [
-                      ...new Set(
-                        stops.map((candidate) => candidate.sourceFeedId)
-                      )
-                    ],
-                    validStopIds
-                  );
-            return [
-              stop.featureId,
-              {
-                featureId: stop.featureId,
-                state:
-                  result?.kind === "auto-matched"
-                    ? "auto-matched"
-                    : "unreviewed",
-                selectedNodeId: node?.id,
-                createCoordinates: undefined,
-                proposals: buildTagProposals(node, mappedTags, staleKeys)
-              } satisfies FeatureReview
-            ];
-          })
-        )
+      const initialReviews = new Map(
+        stops.map((stop) => {
+          const result = initial.get(stop.featureId);
+          const node =
+            result?.kind === "auto-matched" ? result.candidate.node : undefined;
+          const mappedTags = mapStopToOsmTags(profile, stop);
+          const staleKeys =
+            node === undefined
+              ? []
+              : staleIdentityKeys(
+                  node,
+                  [
+                    ...new Set(stops.map((candidate) => candidate.sourceFeedId))
+                  ],
+                  validStopIds
+                );
+          return [
+            stop.featureId,
+            {
+              featureId: stop.featureId,
+              state:
+                result?.kind === "auto-matched" ? "auto-matched" : "unreviewed",
+              selectedNodeId: node?.id,
+              createCoordinates: undefined,
+              proposals: buildTagProposals(node, mappedTags, staleKeys)
+            } satisfies FeatureReview
+          ];
+        })
       );
+      setReviews(initialReviews);
+      await persistReviews(initialReviews);
+      setRetrievalComplete(true);
       setStatus(
-        `Retrieved ${retrieved.length} OSM candidate nodes for review.`
+        retrieved.length === 0
+          ? "Overpass returned no OSM candidate nodes."
+          : `Retrieved ${retrieved.length} OSM candidate nodes for review.`
       );
     } catch (caught: unknown) {
-      setError(
+      const message =
         caught instanceof Error
           ? caught.message
-          : "The OSM candidate request failed."
+          : "The OSM candidate request failed.";
+      setOsmRequestResult(
+        caught instanceof OverpassRequestError &&
+          caught.category === "cancelled"
+          ? { kind: "cancelled" }
+          : { kind: "failed", message }
+      );
+      setStatus(
+        caught instanceof OverpassRequestError &&
+          caught.category === "cancelled"
+          ? "Overpass request cancelled."
+          : "Overpass request failed."
       );
     } finally {
       setLoading(false);
@@ -591,7 +697,26 @@ export function App(): ReactElement {
           `${stop.featureId} refers to a node outside the current snapshot`
         );
       }
+      const sourceFeed = profile.sourceFeeds.find(
+        (candidate) =>
+          normalizeSourceFeedId(candidate.id) ===
+          normalizeSourceFeedId(stop.sourceFeedId)
+      );
+      const coordinates = coordinatesForGeometryTarget(
+        sourceFeed?.geometryTarget ?? "osm",
+        stop,
+        node
+      );
       const existing = modifications.get(node.id);
+      if (
+        existing !== undefined &&
+        (existing.coordinates.latitude !== coordinates.latitude ||
+          existing.coordinates.longitude !== coordinates.longitude)
+      ) {
+        throw new Error(
+          `${node.id} has conflicting geometry targets for selected features`
+        );
+      }
       const tags = computePostChangeTags(
         existing?.tags ?? node.tags,
         review.proposals
@@ -603,6 +728,7 @@ export function App(): ReactElement {
       }
       modifications.set(node.id, {
         node,
+        coordinates,
         featureIds: [...(existing?.featureIds ?? []), stop.featureId],
         requiredIdentityTags: [
           ...(existing?.requiredIdentityTags ?? []),
@@ -662,6 +788,7 @@ export function App(): ReactElement {
       setFeedSummaries([]);
       setValidStopIds(new Map());
       setNodes([]);
+      setRetrievalComplete(false);
       setMatches(new Map());
       setReviews(new Map());
       setFocusedFeatureId(undefined);
@@ -672,6 +799,7 @@ export function App(): ReactElement {
       osmAbortController.current = null;
       setOsmRequestActive(false);
       setOsmProgress(undefined);
+      setOsmRequestResult(undefined);
       setError(undefined);
       setStatus("Session reset. Select local feeds to begin.");
     } catch (caught: unknown) {
@@ -688,6 +816,8 @@ export function App(): ReactElement {
   ): Promise<void> {
     setProfile(nextProfile);
     setNodes([]);
+    setRetrievalComplete(false);
+    setOsmRequestResult(undefined);
     setMatches(new Map());
     setReviews(new Map());
     setFocusedFeatureId(undefined);
@@ -723,6 +853,7 @@ export function App(): ReactElement {
   }
 
   const exportBlocked =
+    !retrievalComplete ||
     nodes.length === 0 ||
     stops.some((stop) => {
       const state = reviews.get(stop.featureId)?.state;
@@ -745,7 +876,7 @@ export function App(): ReactElement {
     {
       id: "upload",
       number: "1",
-      label: "Import",
+      label: "Upload",
       detail: "Load your GTFS feed(s)"
     },
     {
@@ -804,14 +935,30 @@ export function App(): ReactElement {
               aria-labelledby="import-heading"
               aria-busy={importActive}
             >
-              <h2 id="import-heading">2. Import stop records</h2>
+              <h2 id="import-heading">Process GTFS data</h2>
               <p role="status" aria-live="polite">
                 {status}
               </p>
               {importActive && importProgress !== undefined && (
                 <ProgressIndicator
                   label={`GTFS import: ${importProgress.sourceFeedId}`}
-                  detail={`Feed ${importProgress.archiveIndex} of ${importProgress.totalArchives} - ${importProgress.stage.replace(/-/gu, " ")} - ${importProgress.rowsRead.toLocaleString()} rows`}
+                  detail={
+                    importProgress.stage === "fingerprinting"
+                      ? `Feed ${importProgress.archiveIndex} of ${importProgress.totalArchives} - fingerprinting - ${formatBytes(importProgress.bytesRead)} of ${formatBytes(importProgress.totalBytes)}`
+                      : `Feed ${importProgress.archiveIndex} of ${importProgress.totalArchives} - ${importProgress.stage.replace(/-/gu, " ")} - ${importProgress.rowsRead.toLocaleString()} rows`
+                  }
+                  value={
+                    importProgress.stage === "fingerprinting" &&
+                    importProgress.totalBytes > 0
+                      ? importProgress.bytesRead
+                      : undefined
+                  }
+                  max={
+                    importProgress.stage === "fingerprinting" &&
+                    importProgress.totalBytes > 0
+                      ? importProgress.totalBytes
+                      : undefined
+                  }
                 />
               )}
               <div className="button-row">
@@ -828,7 +975,7 @@ export function App(): ReactElement {
                     ? "Cancel import"
                     : loading
                       ? "Working…"
-                      : `Import selected feed${archives.length === 1 ? "" : "s"}`}
+                      : "Process selected feeds"}
                 </button>
                 <button
                   type="button"
@@ -885,8 +1032,23 @@ export function App(): ReactElement {
             <ProfileEditor
               profile={profile}
               availableFields={availableFields}
+              availableFieldsByFeed={
+                new Map(
+                  feedSummaries.map((summary) => [
+                    summary.sourceFeedId,
+                    summary.fields
+                  ])
+                )
+              }
+              uploadedFeedIds={
+                feedSummaries.length > 0
+                  ? feedSummaries.map((summary) => summary.sourceFeedId)
+                  : archives.map((archive) => archive.sourceFeedId)
+              }
+              exampleStops={stops}
+              exampleRowCounts={exampleRowCounts}
               onChange={(nextProfile) => void handleProfileChange(nextProfile)}
-              onReset={() => void handleProfileChange(getPugetSoundProfile())}
+              onReset={() => void handleProfileChange(getDefaultProfile())}
             />
           </div>
         );
@@ -922,7 +1084,7 @@ export function App(): ReactElement {
                     placeholder="https://your-overpass.example/api/interpreter"
                   />
                 </label>
-                <label>
+                <label className="style-url-label">
                   Optional session-only MapLibre style URL
                   <input
                     type="url"
@@ -937,7 +1099,7 @@ export function App(): ReactElement {
                   onClick={() => void retrieveCandidates()}
                   disabled={loading}
                 >
-                  Retrieve candidates
+                  Retrieve Candidates
                 </button>
                 {osmProgress !== undefined && (
                   <ProgressIndicator
@@ -955,13 +1117,16 @@ export function App(): ReactElement {
                     max={osmProgress.total}
                   />
                 )}
+                {osmRequestResult !== undefined && (
+                  <OsmRequestResult result={osmRequestResult} />
+                )}
                 <button
                   type="button"
                   className="secondary"
                   onClick={() => osmAbortController.current?.abort()}
                   disabled={!osmRequestActive}
                 >
-                  Cancel OSM request
+                  Cancel OSM Request
                 </button>
               </>
             )}
@@ -983,7 +1148,7 @@ export function App(): ReactElement {
                 Import a feed and retrieve OSM candidates to build the review
                 queue.
               </p>
-            ) : nodes.length === 0 ? (
+            ) : !retrievalComplete ? (
               <p className="workflow-step-hint">
                 Retrieve OSM candidates before reviewing discrepancies.
               </p>
@@ -1033,7 +1198,7 @@ export function App(): ReactElement {
                   onClick={() => void exportDraft()}
                   disabled={exportBlocked}
                 >
-                  Download OSM Change for JOSM
+                  Download OSM Change File
                 </button>
               </>
             )}
@@ -1042,8 +1207,13 @@ export function App(): ReactElement {
     }
   }
 
+  const layoutStyle = {
+    "--layout-rail-width": `${railWidth}vw`,
+    "--layout-review-height": `${reviewHeight}vh`
+  } as CSSProperties;
+
   return (
-    <main className="app-shell">
+    <main className="app-shell" style={layoutStyle}>
       <header className="app-header">
         <div className="brand-lockup">
           <span className="brand-mark" aria-hidden="true" />
@@ -1057,6 +1227,7 @@ export function App(): ReactElement {
           <p>Sync GTFS feed data with OpenStreetMap data</p>
         </div>
         <div className="header-actions">
+          <span className="app-version">v{packageMetadata.version}</span>
           <a
             className="github-link"
             href="https://github.com/lumikeiju/orcaboros"
@@ -1085,6 +1256,7 @@ export function App(): ReactElement {
                       currentWorkflowStep === step.id ? " is-active" : ""
                     }`}
                     type="button"
+                    aria-label={`${step.number} ${step.label} ${step.detail}`}
                     aria-current={
                       currentWorkflowStep === step.id ? "step" : undefined
                     }
@@ -1116,6 +1288,14 @@ export function App(): ReactElement {
             <small>{nodes.length > 0 ? "Review in progress" : status}</small>
           </div>
         </aside>
+        <ResizeHandle
+          orientation="vertical"
+          value={railWidth}
+          min={MIN_RAIL_WIDTH}
+          max={MAX_RAIL_WIDTH}
+          label="Resize workflow sidebar width"
+          onChange={setRailWidth}
+        />
         <section className="workspace-main" aria-label="Conflation workspace">
           <section className="map-column" aria-labelledby="map-heading">
             <div className="section-heading">
@@ -1127,37 +1307,33 @@ export function App(): ReactElement {
                 {status}
               </p>
             </div>
-            {stops.length > 0 ? (
-              <MapView
-                nodes={nodes}
-                stops={stops}
-                matches={matches}
-                reviews={reviews}
-                validStopIds={validStopIds}
-                exactMatchRadiusMeters={profile.autoIdRadiusMeters}
-                focusedStopId={focusedFeatureId}
-                theme={theme}
-                styleUrl={styleUrl.length > 0 ? styleUrl : undefined}
-              />
-            ) : (
-              <div className="panel map-placeholder">
-                <p>Import local GTFS feeds to load the candidate map.</p>
-              </div>
-            )}
+            <MapView
+              nodes={nodes}
+              stops={stops}
+              matches={matches}
+              reviews={reviews}
+              validStopIds={validStopIds}
+              exactMatchRadiusMeters={profile.autoIdRadiusMeters}
+              focusedFeatureId={focusedFeatureId}
+              onFeatureClick={setFocusedFeatureId}
+              theme={theme}
+              styleUrl={styleUrl.length > 0 ? styleUrl : undefined}
+            />
           </section>
-          {stops.length > 0 ? (
+          <ResizeHandle
+            orientation="horizontal"
+            value={reviewHeight}
+            min={MIN_REVIEW_HEIGHT}
+            max={MAX_REVIEW_HEIGHT}
+            label="Resize map and review panels"
+            onChange={setReviewHeight}
+          />
+          {retrievalComplete ? (
             <section
               id="review-step"
               className="review-workspace"
-              aria-labelledby="review-workspace-heading"
+              aria-labelledby="review-heading"
             >
-              <div className="review-workspace-heading">
-                <div>
-                  <p className="eyebrow">Conflation queue</p>
-                  <h2 id="review-workspace-heading">Review items</h2>
-                </div>
-                <span>{reviews.size.toLocaleString()} decisions recorded</span>
-              </div>
               <ReviewQueue
                 stops={stops}
                 matches={matches}
@@ -1179,8 +1355,9 @@ export function App(): ReactElement {
               <p className="eyebrow">Conflation queue</p>
               <h2 id="review-empty-heading">Review items will appear here</h2>
               <p>
-                Import a local feed and retrieve OSM candidates to begin
-                comparing stops.
+                {stops.length === 0
+                  ? "Import a local feed and retrieve OSM candidates to begin comparing stops."
+                  : "Retrieve OSM candidates to load the review queue."}
               </p>
             </section>
           )}

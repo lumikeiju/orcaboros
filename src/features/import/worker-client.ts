@@ -7,10 +7,17 @@ export type ImportWorkerHandle = {
   cancel: () => void;
 };
 
+export type ImportProgressCallback = (
+  stage: string,
+  rowsRead: number,
+  bytesRead: number,
+  totalBytes?: number
+) => void;
+
 export function startArchiveImport(
   archive: File,
   definitions: readonly SourceFeedDefinition[],
-  onProgress?: (stage: string, rowsRead: number) => void,
+  onProgress?: ImportProgressCallback,
   sourceFeedId?: string
 ): ImportWorkerHandle {
   const worker = new Worker(
@@ -28,7 +35,12 @@ export function startArchiveImport(
         return;
       }
       if (message.type === "progress") {
-        onProgress?.(message.stage, message.rowsRead);
+        onProgress?.(
+          message.stage,
+          message.rowsRead,
+          message.bytesRead,
+          message.totalBytes
+        );
         return;
       }
       settled = true;
@@ -73,7 +85,7 @@ export function startArchiveImport(
 export function importArchiveInWorker(
   archive: File,
   definitions: readonly SourceFeedDefinition[],
-  onProgress?: (stage: string, rowsRead: number) => void,
+  onProgress?: ImportProgressCallback,
   sourceFeedId?: string
 ): Promise<ImportedArchive> {
   return startArchiveImport(archive, definitions, onProgress, sourceFeedId)

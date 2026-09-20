@@ -24,6 +24,8 @@ export type ImportProgressStage =
 export type ImportProgress = {
   stage: ImportProgressStage;
   rowsRead: number;
+  bytesRead: number;
+  totalBytes?: number;
 };
 
 export type ImportOptions = {
@@ -119,6 +121,7 @@ export async function importGtfsArchive(
   let headers: string[] | undefined;
   let rowNumber = 1;
   let rowsRead = 0;
+  let bytesRead = 0;
   let eligibleRows = 0;
   let skippedRows = 0;
   let invalidRows = 0;
@@ -127,8 +130,28 @@ export async function importGtfsArchive(
   const diagnostics: StopDiagnostic[] = [];
   const validStopIds = new Set<string>();
   const firstRowsByStopId = new Map<string, number>();
+  const totalBytes =
+    typeof archive.size === "number" && Number.isFinite(archive.size)
+      ? archive.size
+      : undefined;
+  const fingerprintProgressInterval = Math.max(
+    64 * 1024,
+    Math.ceil((totalBytes ?? 0) / 100)
+  );
+  let lastFingerprintProgressBytes = 0;
+  const reportProgress = (
+    stage: ImportProgressStage,
+    progressRowsRead: number
+  ): void => {
+    options.onProgress?.({
+      stage,
+      rowsRead: progressRowsRead,
+      bytesRead,
+      totalBytes
+    });
+  };
 
-  options.onProgress?.({ stage: "fingerprinting", rowsRead: 0 });
+  reportProgress("fingerprinting", 0);
   const processRows = (rows: readonly (readonly string[])[]) => {
     for (const values of rows) {
       checkAbort(signal);
@@ -189,7 +212,7 @@ export async function importGtfsArchive(
         eligibleRows += 1;
         eligibleStops.push(result.stop);
       }
-      options.onProgress?.({ stage: "reading-stops", rowsRead });
+      reportProgress("reading-stops", rowsRead);
     }
   };
 
@@ -208,6 +231,15 @@ export async function importGtfsArchive(
       (chunk) => {
         checkAbort(signal);
         digest.update(chunk);
+        bytesRead += chunk.byteLength;
+        if (
+          bytesRead - lastFingerprintProgressBytes >=
+            fingerprintProgressInterval ||
+          bytesRead === totalBytes
+        ) {
+          lastFingerprintProgressBytes = bytesRead;
+          reportProgress("fingerprinting", rowsRead);
+        }
       }
     );
   } catch (error) {
@@ -244,7 +276,7 @@ export async function importGtfsArchive(
     );
   }
 
-  options.onProgress?.({ stage: "validating", rowsRead });
+  reportProgress("validating", rowsRead);
   const result: FeedImportResult = {
     sourceFeedId,
     sourceFeedName: definition.displayName,
@@ -260,7 +292,7 @@ export async function importGtfsArchive(
       unsupportedLocationRows
     }
   };
-  options.onProgress?.({ stage: "complete", rowsRead });
+  reportProgress("complete", rowsRead);
   return {
     sourceFeedId,
     archiveFingerprint: bytesToHex(digest.digest()),

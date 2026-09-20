@@ -22,7 +22,7 @@ describe("SourcePicker", () => {
       type: "application/zip"
     });
     fireEvent.change(
-      screen.getByLabelText("Select or drop one or more ZIP archives"),
+      screen.getByLabelText("Select or drop one or more GTFS feeds"),
       {
         target: { files: [file] }
       }
@@ -32,7 +32,7 @@ describe("SourcePicker", () => {
       []
     );
     expect(
-      screen.getByLabelText("Select or drop one or more ZIP archives")
+      screen.getByLabelText("Select or drop one or more GTFS feeds")
     ).toHaveValue("");
   });
 

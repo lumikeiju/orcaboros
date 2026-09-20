@@ -2,6 +2,7 @@ import { EligibleStop, LocationKind } from "./gtfs";
 import { isValidOsmKey, isValidOsmValue, OsmTag } from "./osm";
 import {
   CONSOLIDATED_SOURCE_FEED_ID,
+  DEFAULT_GEOMETRY_TARGET,
   isValidSourceFeedId,
   SourceFeedDefinition,
   normalizeSourceFeedId
@@ -37,12 +38,16 @@ export type MappingRule = {
   appliesTo?: MappingApplicability;
 };
 
+export type ProfileSourceFeed = SourceFeedDefinition & {
+  additionalTags?: readonly MappingRule[];
+};
+
 export type MappingProfile = {
   schemaVersion: 1;
   id: string;
   name: string;
   version: string;
-  sourceFeeds: readonly SourceFeedDefinition[];
+  sourceFeeds: readonly ProfileSourceFeed[];
   mappingRules: readonly MappingRule[];
   candidateRadiusMeters: number;
   autoIdRadiusMeters: number;
@@ -100,7 +105,32 @@ function isMappingField(value: string): value is MappingField {
   return value.length <= 255 && !/[\u0000-\u001f\u007f]/u.test(value);
 }
 
-export function validateMappingProfile(input: unknown): MappingProfile {
+type ProfileValidationOptions = {
+  migrateLegacyAdditionalTags?: boolean;
+};
+
+function ruleAppliesToFeed(rule: MappingRule, sourceFeedId: string): boolean {
+  return (
+    rule.appliesTo?.sourceFeedIds === undefined ||
+    rule.appliesTo.sourceFeedIds.includes(sourceFeedId)
+  );
+}
+
+function isDirectFieldRuleForFeed(
+  rule: MappingRule,
+  sourceFeedId: string
+): boolean {
+  return (
+    rule.value.kind === "field" &&
+    rule.appliesTo?.locationKinds === undefined &&
+    ruleAppliesToFeed(rule, sourceFeedId)
+  );
+}
+
+export function validateMappingProfile(
+  input: unknown,
+  options: ProfileValidationOptions = {}
+): MappingProfile {
   const issues: ProfileValidationIssue[] = [];
   if (!isRecord(input)) {
     throw new ProfileValidationError([
@@ -115,7 +145,7 @@ export function validateMappingProfile(input: unknown): MappingProfile {
   const name = stringValue(input.name, "name", issues);
   const version = stringValue(input.version, "version", issues);
 
-  const sourceFeeds: SourceFeedDefinition[] = [];
+  const sourceFeeds: ProfileSourceFeed[] = [];
   const sourceIds = new Set<string>();
   if (!Array.isArray(input.sourceFeeds) || input.sourceFeeds.length === 0) {
     issues.push({
@@ -159,6 +189,16 @@ export function validateMappingProfile(input: unknown): MappingProfile {
         });
       }
       sourceIds.add(sourceId);
+      const geometryTarget =
+        item.geometryTarget === undefined
+          ? DEFAULT_GEOMETRY_TARGET
+          : item.geometryTarget;
+      if (geometryTarget !== "gtfs" && geometryTarget !== "osm") {
+        issues.push({
+          path: `${path}.geometryTarget`,
+          message: "must be gtfs or osm"
+        });
+      }
       let metadata: Record<string, string> | undefined;
       if (item.metadata !== undefined) {
         if (!isRecord(item.metadata)) {
@@ -193,7 +233,12 @@ export function validateMappingProfile(input: unknown): MappingProfile {
         id: sourceId,
         displayName,
         enabled: item.enabled === true,
-        metadata
+        geometryTarget:
+          geometryTarget === "gtfs" || geometryTarget === "osm"
+            ? geometryTarget
+            : DEFAULT_GEOMETRY_TARGET,
+        metadata,
+        additionalTags: []
       });
     });
   }
@@ -211,12 +256,6 @@ export function validateMappingProfile(input: unknown): MappingProfile {
       const key = stringValue(item.key, `${path}.key`, issues);
       if (!isValidOsmKey(key)) {
         issues.push({ path: `${path}.key`, message: "is not a safe OSM key" });
-      }
-      if (/^gtfs:stop_id:/u.test(key)) {
-        issues.push({
-          path: `${path}.key`,
-          message: "namespaced identity keys are generated from the source feed"
-        });
       }
       if (!isRecord(item.value)) {
         issues.push({ path: `${path}.value`, message: "must be an object" });
@@ -309,6 +348,61 @@ export function validateMappingProfile(input: unknown): MappingProfile {
           locationKinds = [...rawLocationKinds];
         }
       }
+      const identityKeyMatch =
+        /^gtfs:stop_id:([A-Z0-9]+(?:-[A-Z0-9]+)*)$/u.exec(key);
+      if (key.startsWith("gtfs:stop_id:")) {
+        if (identityKeyMatch === null) {
+          issues.push({
+            path: `${path}.key`,
+            message: "must be a valid source-feed identity key"
+          });
+        } else {
+          const identitySourceFeedId = normalizeSourceFeedId(
+            identityKeyMatch[1]
+          );
+          if (!sourceIds.has(identitySourceFeedId)) {
+            issues.push({
+              path: `${path}.key`,
+              message: `${identitySourceFeedId} is not configured in sourceFeeds`
+            });
+          }
+          if (
+            mappingValue.kind !== "field" ||
+            mappingValue.field !== "stop_id"
+          ) {
+            issues.push({
+              path: `${path}.value`,
+              message: "identity keys must map the stop_id field"
+            });
+          }
+          if (
+            sourceFeedIds === undefined &&
+            (sourceIds.size !== 1 || !sourceIds.has(identitySourceFeedId))
+          ) {
+            issues.push({
+              path: `${path}.appliesTo.sourceFeedIds`,
+              message:
+                "must identify its source feed when multiple feeds are configured"
+            });
+          }
+          if (
+            sourceFeedIds !== undefined &&
+            (sourceFeedIds.length !== 1 ||
+              sourceFeedIds[0] !== identitySourceFeedId)
+          ) {
+            issues.push({
+              path: `${path}.appliesTo.sourceFeedIds`,
+              message: "must contain only the identity key source feed"
+            });
+          }
+          if (locationKinds !== undefined) {
+            issues.push({
+              path: `${path}.appliesTo.locationKinds`,
+              message: "identity keys must apply to every location kind"
+            });
+          }
+        }
+      }
       mappingRules.push({
         key,
         value: mappingValue,
@@ -319,6 +413,92 @@ export function validateMappingProfile(input: unknown): MappingProfile {
       });
     });
   }
+
+  const sourceFeedsWithAdditionalTags = sourceFeeds.map((sourceFeed, index) => {
+    const rawSourceFeed = Array.isArray(input.sourceFeeds)
+      ? input.sourceFeeds[index]
+      : undefined;
+    const rawAdditionalTags = isRecord(rawSourceFeed)
+      ? rawSourceFeed.additionalTags
+      : undefined;
+    if (rawAdditionalTags === undefined) {
+      return sourceFeed;
+    }
+    const path = `sourceFeeds[${index}]`;
+    if (!Array.isArray(rawAdditionalTags)) {
+      issues.push({
+        path: `${path}.additionalTags`,
+        message: "must be an array"
+      });
+      return sourceFeed;
+    }
+    try {
+      const additionalProfile = validateMappingProfile(
+        {
+          schemaVersion: PROFILE_SCHEMA_VERSION,
+          id: "additional-tags",
+          name: "Additional tags",
+          version: "1.0.0",
+          sourceFeeds: [
+            {
+              id: sourceFeed.id,
+              displayName: sourceFeed.displayName,
+              enabled: true
+            }
+          ],
+          mappingRules: rawAdditionalTags,
+          candidateRadiusMeters: 50,
+          autoIdRadiusMeters: 10
+        },
+        { migrateLegacyAdditionalTags: false }
+      );
+      return {
+        ...sourceFeed,
+        additionalTags: additionalProfile.mappingRules
+      };
+    } catch (caught: unknown) {
+      if (!(caught instanceof ProfileValidationError)) {
+        throw caught;
+      }
+      for (const issue of caught.issues) {
+        issues.push({
+          path: issue.path.startsWith("mappingRules")
+            ? `${path}.additionalTags${issue.path.slice("mappingRules".length)}`
+            : `${path}.additionalTags.${issue.path}`,
+          message: issue.message
+        });
+      }
+      return sourceFeed;
+    }
+  });
+
+  const legacyAdditionalTags =
+    options.migrateLegacyAdditionalTags === false
+      ? []
+      : mappingRules.filter(
+          (rule) =>
+            !sourceFeedsWithAdditionalTags.some((sourceFeed) =>
+              isDirectFieldRuleForFeed(rule, sourceFeed.id)
+            )
+        );
+  const normalizedSourceFeeds = sourceFeedsWithAdditionalTags.map(
+    (sourceFeed) => ({
+      ...sourceFeed,
+      additionalTags:
+        legacyAdditionalTags.length === 0
+          ? sourceFeed.additionalTags
+          : [
+              ...(sourceFeed.additionalTags ?? []),
+              ...legacyAdditionalTags.filter((rule) =>
+                ruleAppliesToFeed(rule, sourceFeed.id)
+              )
+            ]
+    })
+  );
+  const normalizedMappingRules =
+    options.migrateLegacyAdditionalTags === false
+      ? mappingRules
+      : mappingRules.filter((rule) => !legacyAdditionalTags.includes(rule));
 
   const candidateRadiusMeters = numericRadius(
     input.candidateRadiusMeters,
@@ -345,8 +525,8 @@ export function validateMappingProfile(input: unknown): MappingProfile {
     id,
     name,
     version,
-    sourceFeeds,
-    mappingRules,
+    sourceFeeds: normalizedSourceFeeds,
+    mappingRules: normalizedMappingRules,
     candidateRadiusMeters,
     autoIdRadiusMeters
   };
@@ -382,7 +562,10 @@ function applies(rule: MappingRule, stop: EligibleStop): boolean {
   return sourceFeedMatches && locationMatches;
 }
 
-function fieldValue(field: MappingField, stop: EligibleStop): string {
+export function mappingFieldValue(
+  field: MappingField,
+  stop: EligibleStop
+): string {
   switch (field) {
     case "stop_id":
       return stop.stopId;
@@ -412,7 +595,11 @@ export function evaluateMappingRules(
   stop: EligibleStop
 ): readonly OsmTag[] {
   const tags: OsmTag[] = [];
-  for (const rule of profile.mappingRules) {
+  const feedAdditionalTags =
+    profile.sourceFeeds.find(
+      (sourceFeed) => sourceFeed.id === stop.sourceFeedId
+    )?.additionalTags ?? [];
+  for (const rule of [...profile.mappingRules, ...feedAdditionalTags]) {
     if (!applies(rule, stop)) {
       continue;
     }
@@ -420,7 +607,7 @@ export function evaluateMappingRules(
       rule.value.kind === "constant"
         ? rule.value.value
         : rule.value.kind === "field"
-          ? fieldValue(rule.value.field, stop)
+          ? mappingFieldValue(rule.value.field, stop)
           : (stop.sourceFeedMetadata?.[rule.value.key] ?? "");
     if (value.length === 0) {
       continue;

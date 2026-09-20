@@ -11,6 +11,36 @@ function archiveWithStops(csv: string, name = "US-WA-KCM.zip") {
 }
 
 describe("streaming GTFS importer", () => {
+  it("reports byte progress while fingerprinting an archive", async () => {
+    const archive = archiveWithStops(
+      "stop_id,stop_name,stop_lat,stop_lon\nstop-1,Test,47,-122"
+    );
+    const progress: Array<{
+      stage: string;
+      bytesRead: number;
+      totalBytes?: number;
+    }> = [];
+
+    await importGtfsArchive(archive, {
+      definitions: STOCK_SOURCE_FEED_DEFINITIONS,
+      onProgress: ({ stage, bytesRead, totalBytes }) => {
+        progress.push({ stage, bytesRead, totalBytes });
+      }
+    });
+
+    const fingerprintProgress = progress.filter(
+      (item) => item.stage === "fingerprinting"
+    );
+    expect(fingerprintProgress).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          bytesRead: archive.size,
+          totalBytes: archive.size
+        })
+      ])
+    );
+  });
+
   it("reads only stops.txt and retains valid IDs for excluded locations", async () => {
     const imported = await importGtfsArchive(
       archiveWithStops(

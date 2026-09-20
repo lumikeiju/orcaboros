@@ -50,7 +50,9 @@ async function runImport(request: GtfsWorkerImportRequest): Promise<void> {
           type: "progress",
           requestId: request.requestId,
           stage: progress.stage,
-          rowsRead: progress.rowsRead
+          rowsRead: progress.rowsRead,
+          bytesRead: progress.bytesRead,
+          totalBytes: progress.totalBytes
         });
       }
     });

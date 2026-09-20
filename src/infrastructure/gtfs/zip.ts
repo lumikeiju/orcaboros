@@ -2,6 +2,7 @@ import { AsyncUnzipInflate, Unzip } from "fflate";
 
 export type StreamableBlob = {
   stream: () => ReadableStream<Uint8Array>;
+  size?: number;
 };
 
 export type NamedBlob = StreamableBlob & { name: string };

@@ -6,7 +6,11 @@ import {
   STOCK_SOURCE_FEED_DEFINITIONS,
   validateSourceFeedSelection
 } from "../../src/domain/source-feed";
-import { getProfileForFeedId, getPugetSoundProfile } from "../../src/profiles";
+import {
+  createCustomProfileForFeedIds,
+  getDefaultProfile,
+  getProfileForFeedId
+} from "../../src/profiles";
 import {
   validateMappingProfile,
   ProfileValidationError
@@ -49,17 +53,104 @@ describe("source-feed identity", () => {
     ]);
   });
 
-  it("keeps the stock profile registry exact", () => {
-    expect(
-      getPugetSoundProfile().sourceFeeds.map((source) => source.id)
-    ).toEqual(STOCK_SOURCE_FEED_DEFINITIONS.map((source) => source.id));
+  it("registers one individual profile for every stock feed", () => {
+    for (const source of STOCK_SOURCE_FEED_DEFINITIONS) {
+      const profile = getProfileForFeedId(source.id);
+      expect(profile?.sourceFeeds).toEqual([
+        expect.objectContaining({ id: source.id })
+      ]);
+    }
+  });
+
+  it("combines all individual stock profiles for the default profile", () => {
+    expect(getDefaultProfile().sourceFeeds.map((source) => source.id)).toEqual(
+      STOCK_SOURCE_FEED_DEFINITIONS.map((source) => source.id)
+    );
+  });
+
+  it("gives every stock feed profile its own default identity mapping", () => {
+    for (const source of STOCK_SOURCE_FEED_DEFINITIONS) {
+      const profile = getProfileForFeedId(source.id);
+      if (profile === undefined) {
+        throw new Error(`stock profile is missing for ${source.id}`);
+      }
+      expect(profile.mappingRules).toContainEqual({
+        key: `gtfs:stop_id:${source.id}`,
+        value: { kind: "field", field: "stop_id" },
+        appliesTo: { sourceFeedIds: [source.id] }
+      });
+    }
+  });
+
+  it("maps the GTFS stop name to the OSM name tag for every stock profile", () => {
+    for (const source of STOCK_SOURCE_FEED_DEFINITIONS) {
+      const profile = getProfileForFeedId(source.id);
+      if (profile === undefined) {
+        throw new Error(`stock profile is missing for ${source.id}`);
+      }
+      expect(profile.mappingRules).toContainEqual({
+        key: "name",
+        value: { kind: "field", field: "stop_name" }
+      });
+      expect(profile.mappingRules).not.toEqual(
+        expect.arrayContaining([
+          {
+            key: "name",
+            value: { kind: "field", field: "stop_name_expanded" }
+          }
+        ])
+      );
+    }
   });
 
   it("looks up a stock profile by normalized feed ID", () => {
-    expect(getProfileForFeedId("us-wa-kcm")?.sourceFeeds).toEqual([
+    const profile = getProfileForFeedId("us-wa-kcm");
+    expect(profile?.sourceFeeds).toEqual([
       expect.objectContaining({ id: "US-WA-KCM" })
     ]);
+    expect(profile?.mappingRules).toEqual(
+      expect.arrayContaining([
+        {
+          key: "gtfs:stop_id:US-WA-KCM",
+          value: { kind: "field", field: "stop_id" },
+          appliesTo: { sourceFeedIds: ["US-WA-KCM"] }
+        }
+      ])
+    );
+    expect(profile?.mappingRules).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          key: "gtfs:stop_id:US-WA-ET"
+        })
+      ])
+    );
+    expect(profile?.mappingRules).not.toEqual(
+      expect.arrayContaining([
+        {
+          key: "public_transport",
+          value: { kind: "constant", value: "station" },
+          appliesTo: { locationKinds: ["station"] }
+        }
+      ])
+    );
     expect(getProfileForFeedId("US-WA-UNKNOWN")).toBeUndefined();
+  });
+
+  it("includes source-scoped identity mappings in new custom profiles", () => {
+    const profile = createCustomProfileForFeedIds(["US-WA-NEW", "US-WA-OTHER"]);
+
+    expect(profile.mappingRules).toEqual([
+      {
+        key: "gtfs:stop_id:US-WA-NEW",
+        value: { kind: "field", field: "stop_id" },
+        appliesTo: { sourceFeedIds: ["US-WA-NEW"] }
+      },
+      {
+        key: "gtfs:stop_id:US-WA-OTHER",
+        value: { kind: "field", field: "stop_id" },
+        appliesTo: { sourceFeedIds: ["US-WA-OTHER"] }
+      }
+    ]);
   });
 
   it("does not allow a custom profile to re-enable US-WA-PSC", () => {

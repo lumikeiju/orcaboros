@@ -31,7 +31,14 @@ const session: StagedSession = {
     id: "test",
     name: "Test",
     version: "1.0.0",
-    sourceFeeds: [{ id: "US-WA-KCM", displayName: "KCM", enabled: true }],
+    sourceFeeds: [
+      {
+        id: "US-WA-KCM",
+        displayName: "KCM",
+        enabled: true,
+        geometryTarget: "osm"
+      }
+    ],
     mappingRules: [],
     candidateRadiusMeters: 50,
     autoIdRadiusMeters: 10

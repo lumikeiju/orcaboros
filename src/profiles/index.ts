@@ -1,4 +1,12 @@
-import profileJson from "./puget-sound.json";
+import communityTransitProfileJson from "./US-WA-CT.json";
+import everettTransitProfileJson from "./US-WA-ET.json";
+import intercityTransitProfileJson from "./US-WA-IT.json";
+import kingCountyMetroProfileJson from "./US-WA-KCM.json";
+import kitsapTransitProfileJson from "./US-WA-KT.json";
+import pierceTransitProfileJson from "./US-WA-PT.json";
+import seattleCenterMonorailProfileJson from "./US-WA-SCM.json";
+import soundTransitProfileJson from "./US-WA-ST.json";
+import washingtonStateFerriesProfileJson from "./US-WA-WSF.json";
 import {
   MappingProfile,
   ProfileValidationError,
@@ -6,42 +14,35 @@ import {
 } from "../domain/profile";
 import {
   CONSOLIDATED_SOURCE_FEED_ID,
+  identityTagKey,
   isValidSourceFeedId,
   normalizeSourceFeedId
 } from "../domain/source-feed";
 import { sha256Hex } from "../domain/session";
 
-export const PugetSoundProfile = validateMappingProfile(profileJson);
-export const PUgetSoundProfile = PugetSoundProfile;
-
-function profileForSourceFeed(sourceFeedId: string): MappingProfile {
-  const sourceFeed = PugetSoundProfile.sourceFeeds.find(
-    (candidate) => normalizeSourceFeedId(candidate.id) === sourceFeedId
-  );
-  if (sourceFeed === undefined) {
-    throw new Error(`No stock profile exists for ${sourceFeedId}`);
-  }
-  return {
-    ...PugetSoundProfile,
-    id: `${PugetSoundProfile.id}-${sourceFeedId.toLowerCase()}`,
-    name: `${sourceFeed.displayName} mapping profile`,
-    sourceFeeds: [sourceFeed]
-  };
-}
+const stockProfiles = [
+  communityTransitProfileJson,
+  everettTransitProfileJson,
+  intercityTransitProfileJson,
+  kingCountyMetroProfileJson,
+  kitsapTransitProfileJson,
+  pierceTransitProfileJson,
+  seattleCenterMonorailProfileJson,
+  soundTransitProfileJson,
+  washingtonStateFerriesProfileJson
+].map((profile) => validateMappingProfile(profile));
 
 export const PROFILE_DICTIONARY: Readonly<Record<string, MappingProfile>> =
   Object.freeze(
     Object.fromEntries(
-      PugetSoundProfile.sourceFeeds.map((sourceFeed) => {
-        const sourceFeedId = normalizeSourceFeedId(sourceFeed.id);
-        return [sourceFeedId, profileForSourceFeed(sourceFeedId)];
-      })
+      stockProfiles.flatMap((profile) =>
+        profile.sourceFeeds.map((sourceFeed) => [
+          normalizeSourceFeedId(sourceFeed.id),
+          profile
+        ])
+      )
     )
   );
-
-export function getPugetSoundProfile(): MappingProfile {
-  return PugetSoundProfile;
-}
 
 export function getProfileForFeedId(
   sourceFeedId: string
@@ -86,6 +87,18 @@ export function getProfileForFeedIds(
   };
 }
 
+export function getDefaultProfile(): MappingProfile {
+  const profile = getProfileForFeedIds(
+    stockProfiles.flatMap((stockProfile) =>
+      stockProfile.sourceFeeds.map((sourceFeed) => sourceFeed.id)
+    )
+  );
+  if (profile === undefined) {
+    throw new Error("The stock profile registry is empty");
+  }
+  return profile;
+}
+
 export function createCustomProfileForFeedIds(
   sourceFeedIds: readonly string[]
 ): MappingProfile {
@@ -114,9 +127,15 @@ export function createCustomProfileForFeedIds(
     sourceFeeds: normalizedIds.map((sourceFeedId) => ({
       id: sourceFeedId,
       displayName: sourceFeedId,
-      enabled: true
+      enabled: true,
+      geometryTarget: "osm",
+      additionalTags: []
     })),
-    mappingRules: [],
+    mappingRules: normalizedIds.map((sourceFeedId) => ({
+      key: identityTagKey(sourceFeedId),
+      value: { kind: "field", field: "stop_id" },
+      appliesTo: { sourceFeedIds: [sourceFeedId] }
+    })),
     candidateRadiusMeters: 50,
     autoIdRadiusMeters: 10
   };

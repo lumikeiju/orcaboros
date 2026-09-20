@@ -70,8 +70,8 @@ function modifyXml(modify: DraftModify): string {
   const tags = tagXml(modify.tags);
   return [
     `  <node id="${modify.node.id}" version="${modify.node.version}" lat="${coordinate(
-      modify.node.latitude
-    )}" lon="${coordinate(modify.node.longitude)}">`,
+      modify.coordinates.latitude
+    )}" lon="${coordinate(modify.coordinates.longitude)}">`,
     ...(tags.length > 0 ? tags.split("\n") : []),
     "  </node>"
   ].join("\n");
@@ -147,6 +147,16 @@ export function validateChangeDraft(draft: ChangeDraft): void {
       if (featureId.length === 0) {
         issues.push(`OSM node ${modify.node.id} has an empty feature claim`);
       }
+    }
+    if (
+      !Number.isFinite(modify.coordinates.latitude) ||
+      modify.coordinates.latitude < -90 ||
+      modify.coordinates.latitude > 90 ||
+      !Number.isFinite(modify.coordinates.longitude) ||
+      modify.coordinates.longitude < -180 ||
+      modify.coordinates.longitude > 180
+    ) {
+      issues.push(`OSM node ${modify.node.id} has invalid coordinates`);
     }
     const identityKeys = new Set<string>();
     for (const identity of modify.requiredIdentityTags) {
