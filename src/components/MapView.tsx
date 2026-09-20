@@ -15,8 +15,8 @@ export const MAP_STYLE_URLS = {
   light: "https://tiles.openfreemap.org/styles/positron"
 } as const;
 
-export const DEFAULT_MAP_CENTER: [number, number] = [0, 0];
-export const DEFAULT_MAP_ZOOM = 0;
+export const DEFAULT_MAP_CENTER: [number, number] = [-98, 39];
+export const DEFAULT_MAP_ZOOM = 1.6;
 
 const MAP_STYLE_NAMES = {
   dark: "Fiord",
@@ -92,7 +92,20 @@ const MARKER_VISUALS: Readonly<
   pending: { color: "#94A3B8", shape: "ring" }
 };
 const CANDIDATE_VISUAL = { color: "#67D9C8", shape: "cross" } as const;
-const FOCUS_HALO_COLOR = "#67D9C8";
+/**
+ * Focused-feature highlight color, shared with the review queue card
+ * highlight. Read from the `--color-selection-highlight` CSS custom
+ * property so both surfaces change from one place.
+ */
+const SELECTION_HIGHLIGHT_VARIABLE = "--color-selection-highlight";
+const SELECTION_HIGHLIGHT_FALLBACK = "#67D9C8";
+
+function readSelectionHighlightColor(): string {
+  const value = getComputedStyle(document.documentElement)
+    .getPropertyValue(SELECTION_HIGHLIGHT_VARIABLE)
+    .trim();
+  return value.length > 0 ? value : SELECTION_HIGHLIGHT_FALLBACK;
+}
 type HeatmapColor = {
   low: string;
   medium: string;
@@ -273,7 +286,7 @@ function addFocusHaloLayer(
       minzoom: DETAIL_ZOOM,
       filter: ["==", ["get", "focused"], true],
       paint: {
-        "circle-color": FOCUS_HALO_COLOR,
+        "circle-color": readSelectionHighlightColor(),
         "circle-opacity": 0.55,
         "circle-blur": 0.75,
         "circle-radius": [

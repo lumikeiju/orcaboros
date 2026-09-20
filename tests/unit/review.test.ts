@@ -4,7 +4,9 @@ import { OsmNode } from "../../src/domain/osm";
 import {
   applyReviewAction,
   buildTagProposals,
+  computeConflationProgress,
   computePostChangeTags,
+  firstUndecidedFeatureId,
   staleIdentityKeys,
   validateReviewCompletion
 } from "../../src/domain/review";
@@ -113,5 +115,193 @@ describe("review state and tag decisions", () => {
         new Map([[1, { name: "Missing identity" }]])
       )
     ).toContain(`${stopFixture.featureId} has no required identity tag`);
+  });
+});
+
+describe("computeConflationProgress", () => {
+  const validStopIds = new Map([["US-WA-KCM", new Set(["1", "2"])]]);
+
+  function review(
+    featureId: string,
+    state:
+      | "unreviewed"
+      | "auto-matched"
+      | "match-selected"
+      | "create-selected"
+      | "skipped"
+  ) {
+    return [
+      featureId,
+      {
+        featureId,
+        state,
+        selectedNodeId: undefined,
+        createCoordinates: undefined,
+        proposals: []
+      }
+    ] as const;
+  }
+
+  it("counts resolved decisions against only-in-osm plus GTFS features", () => {
+    const stops = [fixtureStop(), fixtureStop(), fixtureStop()].map(
+      (stop, index) => ({
+        ...stop,
+        featureId: `US-WA-KCM:${index + 1}`
+      })
+    );
+    const nodes: OsmNode[] = [
+      {
+        id: 10,
+        version: 1,
+        latitude: 47,
+        longitude: -122,
+        tags: { "gtfs:stop_id:US-WA-KCM": "stale" }
+      },
+      {
+        id: 11,
+        version: 1,
+        latitude: 47,
+        longitude: -122,
+        tags: { "gtfs:stop_id:US-WA-KCM": "1" }
+      }
+    ];
+    const progress = computeConflationProgress({
+      stops,
+      nodes,
+      reviews: new Map([
+        review(stops[0].featureId, "auto-matched"),
+        review(stops[1].featureId, "skipped")
+      ]),
+      validStopIds
+    });
+    expect(progress).toEqual({ resolved: 2, total: 4 });
+  });
+
+  it("treats unreviewed features as unresolved and ignores non-identity nodes", () => {
+    const stops = [fixtureStop()];
+    const nodes: OsmNode[] = [
+      {
+        id: 12,
+        version: 1,
+        latitude: 47,
+        longitude: -122,
+        tags: { name: "Unrelated node" }
+      }
+    ];
+    const progress = computeConflationProgress({
+      stops,
+      nodes,
+      reviews: new Map([review(fixtureStop().featureId, "unreviewed")]),
+      validStopIds
+    });
+    expect(progress).toEqual({ resolved: 0, total: 1 });
+  });
+});
+
+describe("firstUndecidedFeatureId", () => {
+  const validStopIds = new Map([["US-WA-KCM", new Set(["1", "2"])]]);
+
+  function review(
+    featureId: string,
+    state:
+      | "unreviewed"
+      | "auto-matched"
+      | "match-selected"
+      | "create-selected"
+      | "skipped"
+  ) {
+    return [
+      featureId,
+      {
+        featureId,
+        state,
+        selectedNodeId: undefined,
+        createCoordinates: undefined,
+        proposals: []
+      }
+    ] as const;
+  }
+
+  function stopWithFeatureId(index: number) {
+    return {
+      ...fixtureStop(),
+      featureId: `US-WA-KCM:${index}`
+    };
+  }
+
+  it("returns the first stop without a review decision", () => {
+    const stops = [stopWithFeatureId(1), stopWithFeatureId(2)];
+    expect(
+      firstUndecidedFeatureId({
+        stops,
+        nodes: [],
+        reviews: new Map([
+          review(stops[0].featureId, "auto-matched"),
+          review(stops[1].featureId, "unreviewed")
+        ]),
+        validStopIds
+      })
+    ).toBe(stops[1].featureId);
+  });
+
+  it("treats a missing review entry as undecided", () => {
+    const stops = [stopWithFeatureId(1), stopWithFeatureId(2)];
+    expect(
+      firstUndecidedFeatureId({
+        stops,
+        nodes: [],
+        reviews: new Map([review(stops[0].featureId, "skipped")]),
+        validStopIds
+      })
+    ).toBe(stops[1].featureId);
+  });
+
+  it("falls back to the first OSM-only node after all stops are decided", () => {
+    const stops = [stopWithFeatureId(1)];
+    const nodes: OsmNode[] = [
+      {
+        id: 10,
+        version: 1,
+        latitude: 47,
+        longitude: -122,
+        tags: { name: "Unrelated node" }
+      },
+      {
+        id: 11,
+        version: 1,
+        latitude: 47,
+        longitude: -122,
+        tags: { "gtfs:stop_id:US-WA-KCM": "stale" }
+      }
+    ];
+    expect(
+      firstUndecidedFeatureId({
+        stops,
+        nodes,
+        reviews: new Map([review(stops[0].featureId, "skipped")]),
+        validStopIds
+      })
+    ).toBe("removed-11");
+  });
+
+  it("returns undefined when every feature has a decision", () => {
+    const stops = [stopWithFeatureId(1)];
+    const nodes: OsmNode[] = [
+      {
+        id: 11,
+        version: 1,
+        latitude: 47,
+        longitude: -122,
+        tags: { "gtfs:stop_id:US-WA-KCM": "1" }
+      }
+    ];
+    expect(
+      firstUndecidedFeatureId({
+        stops,
+        nodes,
+        reviews: new Map([review(stops[0].featureId, "match-selected")]),
+        validStopIds
+      })
+    ).toBeUndefined();
   });
 });

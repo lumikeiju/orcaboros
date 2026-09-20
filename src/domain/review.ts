@@ -212,3 +212,96 @@ export function isIdentityTagForFeature(
 ): boolean {
   return key === identityTagKey(stop.sourceFeedId);
 }
+
+export type ConflationProgress = {
+  resolved: number;
+  total: number;
+};
+
+/**
+ * Returns the feature ID of the first feature that still requires a review
+ * decision, or `undefined` when every feature has been decided.
+ *
+ * The queue order matches the review queue: GTFS stops in feed order, then
+ * OSM-only nodes whose identity tags are absent from the imported data.
+ */
+export function firstUndecidedFeatureId({
+  stops,
+  nodes,
+  reviews,
+  validStopIds
+}: {
+  stops: readonly EligibleStop[];
+  nodes: readonly OsmNode[];
+  reviews: ReadonlyMap<string, FeatureReview>;
+  validStopIds: ReadonlyMap<string, ReadonlySet<string>>;
+}): string | undefined {
+  const undecidedStop = stops.find(
+    (stop) =>
+      reviews.get(stop.featureId)?.state === undefined ||
+      reviews.get(stop.featureId)?.state === "unreviewed"
+  );
+  if (undecidedStop !== undefined) {
+    return undecidedStop.featureId;
+  }
+  const identityKeys = new Map(
+    [...validStopIds.keys()].map((sourceFeedId) => [
+      identityTagKey(sourceFeedId),
+      sourceFeedId
+    ])
+  );
+  const removedNode = nodes.find((node) =>
+    Object.entries(node.tags).some(([key, value]) => {
+      const sourceFeedId = identityKeys.get(key);
+      return (
+        sourceFeedId !== undefined &&
+        !validStopIds.get(sourceFeedId)?.has(value)
+      );
+    })
+  );
+  return removedNode === undefined ? undefined : `removed-${removedNode.id}`;
+}
+
+/**
+ * Computes the conflation progress ring values.
+ *
+ * Resolved counts GTFS features that are auto-matched or have an explicit
+ * review decision. Total counts every feature that requires a decision:
+ * OSM-only features (removed), GTFS-only features (new), and matched
+ * features (exact or moved).
+ */
+export function computeConflationProgress({
+  stops,
+  nodes,
+  reviews,
+  validStopIds
+}: {
+  stops: readonly EligibleStop[];
+  nodes: readonly OsmNode[];
+  reviews: ReadonlyMap<string, FeatureReview>;
+  validStopIds: ReadonlyMap<string, ReadonlySet<string>>;
+}): ConflationProgress {
+  const resolved = stops.filter((stop) => {
+    const state = reviews.get(stop.featureId)?.state;
+    return state !== undefined && state !== "unreviewed";
+  }).length;
+  const identityKeys = new Map(
+    [...validStopIds.keys()].map((sourceFeedId) => [
+      identityTagKey(sourceFeedId),
+      sourceFeedId
+    ])
+  );
+  const onlyInOsmCount = nodes.filter((node) =>
+    Object.entries(node.tags).some(([key, value]) => {
+      const sourceFeedId = identityKeys.get(key);
+      return (
+        sourceFeedId !== undefined &&
+        !validStopIds.get(sourceFeedId)?.has(value)
+      );
+    })
+  ).length;
+  return {
+    resolved,
+    total: onlyInOsmCount + stops.length
+  };
+}

@@ -56,8 +56,8 @@ function candidateMatch(
 
 describe("map stop extent", () => {
   it("uses the shared globe view as the default camera", () => {
-    expect(DEFAULT_MAP_CENTER).toEqual([0, 0]);
-    expect(DEFAULT_MAP_ZOOM).toBe(0);
+    expect(DEFAULT_MAP_CENTER).toEqual([-98, 39]);
+    expect(DEFAULT_MAP_ZOOM).toBe(1.6);
   });
 
   it("returns the loaded stop bounds", () => {

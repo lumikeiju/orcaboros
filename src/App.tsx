@@ -8,6 +8,7 @@ import {
 } from "react";
 import { SourcePicker, SelectedArchive } from "./components/SourcePicker";
 import { ProgressIndicator } from "./components/ProgressIndicator";
+import { ProgressRing } from "./components/ProgressRing";
 import { ProfileEditor } from "./components/ProfileEditor";
 import { ReviewQueue } from "./components/ReviewQueue";
 import { MapView } from "./components/MapView";
@@ -25,14 +26,16 @@ import {
 } from "./profiles";
 import { MappingProfile } from "./domain/profile";
 import { EligibleStop, FeedImportResult } from "./domain/gtfs";
+import { InitialMatch, validateSelectedClaims } from "./domain/matching";
 import {
   FeatureReview,
   applyReviewAction,
   buildTagProposals,
+  computeConflationProgress,
+  firstUndecidedFeatureId,
   computePostChangeTags,
   staleIdentityKeys
 } from "./domain/review";
-import { InitialMatch, validateSelectedClaims } from "./domain/matching";
 import { OsmNode } from "./domain/osm";
 import {
   ChangeDraft,
@@ -645,14 +648,6 @@ export function App(): ReactElement {
   }
 
   function createDraft(): ChangeDraft {
-    const incomplete = stops.filter(
-      (stop) =>
-        reviews.get(stop.featureId)?.state === undefined ||
-        reviews.get(stop.featureId)?.state === "unreviewed"
-    );
-    if (incomplete.length > 0) {
-      throw new Error(`${incomplete.length} feature(s) are still unreviewed`);
-    }
     const claimIssues = validateSelectedClaims(
       stops.flatMap((stop) => {
         const review = reviews.get(stop.featureId);
@@ -672,7 +667,11 @@ export function App(): ReactElement {
     const modifications = new Map<number, DraftModify>();
     for (const stop of stops) {
       const review = reviews.get(stop.featureId);
-      if (review === undefined || review.state === "skipped") {
+      if (
+        review === undefined ||
+        review.state === "skipped" ||
+        review.state === "unreviewed"
+      ) {
         continue;
       }
       if (review.state === "create-selected") {
@@ -852,18 +851,15 @@ export function App(): ReactElement {
     }
   }
 
+  const exportableDecisionCount = [...reviews.values()].filter(
+    (review) =>
+      review.state === "auto-matched" ||
+      review.state === "match-selected" ||
+      review.state === "create-selected"
+  ).length;
+
   const exportBlocked =
-    !retrievalComplete ||
-    nodes.length === 0 ||
-    stops.some((stop) => {
-      const state = reviews.get(stop.featureId)?.state;
-      return (
-        state !== "auto-matched" &&
-        state !== "match-selected" &&
-        state !== "create-selected" &&
-        state !== "skipped"
-      );
-    });
+    !retrievalComplete || nodes.length === 0 || exportableDecisionCount === 0;
 
   const currentWorkflowStep =
     openWorkflowStep === undefined ? "upload" : openWorkflowStep;
@@ -909,6 +905,13 @@ export function App(): ReactElement {
     (review) => review.state !== "unreviewed"
   ).length;
 
+  const conflationProgress = computeConflationProgress({
+    stops,
+    nodes,
+    reviews,
+    validStopIds
+  });
+
   function renderWorkflowContent(stepId: WorkflowStepId): ReactElement {
     switch (stepId) {
       case "upload":
@@ -948,13 +951,11 @@ export function App(): ReactElement {
                       : `Feed ${importProgress.archiveIndex} of ${importProgress.totalArchives} - ${importProgress.stage.replace(/-/gu, " ")} - ${importProgress.rowsRead.toLocaleString()} rows`
                   }
                   value={
-                    importProgress.stage === "fingerprinting" &&
                     importProgress.totalBytes > 0
                       ? importProgress.bytesRead
                       : undefined
                   }
                   max={
-                    importProgress.stage === "fingerprinting" &&
                     importProgress.totalBytes > 0
                       ? importProgress.totalBytes
                       : undefined
@@ -1161,11 +1162,19 @@ export function App(): ReactElement {
                 <button
                   type="button"
                   className="secondary"
-                  onClick={() =>
+                  onClick={() => {
+                    setFocusedFeatureId(
+                      firstUndecidedFeatureId({
+                        stops,
+                        nodes,
+                        reviews,
+                        validStopIds
+                      })
+                    );
                     document
                       .getElementById("review-step")
-                      ?.scrollIntoView({ behavior: "smooth", block: "start" })
-                  }
+                      ?.scrollIntoView({ behavior: "smooth", block: "start" });
+                  }}
                 >
                   Open review queue
                 </button>
@@ -1186,12 +1195,21 @@ export function App(): ReactElement {
               <p className="workflow-step-hint">
                 Complete import, retrieval, and review before exporting.
               </p>
+            ) : !retrievalComplete ? (
+              <p className="workflow-step-hint">
+                Retrieve OSM candidates before exporting.
+              </p>
             ) : (
               <>
                 <p>
-                  Download is blocked until every eligible feature has an
-                  explicit decision and each selected node has a valid
-                  post-change tag set.
+                  Export downloads every resolved decision so far, including
+                  auto-matches. Unreviewed features are left out of the file, so
+                  you can export partial progress or wait until every feature
+                  has been reviewed.
+                </p>
+                <p>
+                  <strong>{exportableDecisionCount.toLocaleString()}</strong> of{" "}
+                  {stops.length.toLocaleString()} feature(s) ready to export.
                 </p>
                 <button
                   type="button"
@@ -1283,7 +1301,10 @@ export function App(): ReactElement {
             })}
           </nav>
           <div className="progress-rail" aria-label="Workflow progress">
-            <span className="progress-ring" aria-hidden="true" />
+            <ProgressRing
+              resolved={conflationProgress.resolved}
+              total={conflationProgress.total}
+            />
             <strong>Progress</strong>
             <small>{nodes.length > 0 ? "Review in progress" : status}</small>
           </div>

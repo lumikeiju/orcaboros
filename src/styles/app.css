@@ -5,6 +5,7 @@
   --color-primary: #168f87;
   --color-primary-hover: #1aa89d;
   --color-accent: #67d9c8;
+  --color-selection-highlight: #67d9c8;
   --color-primary-contrast: #ffffff;
   --color-focus: #fbbf24;
   --color-surface: #102027;
@@ -75,6 +76,7 @@
   --color-primary: #2f6b4f;
   --color-primary-hover: #24563e;
   --color-accent: #3f7a59;
+  --color-selection-highlight: #4f6621;
   --color-primary-contrast: #ffffff;
   --color-focus: #f59e0b;
   --color-surface: #fbfdfb;
@@ -509,15 +511,41 @@ button:disabled {
 }
 
 .progress-ring {
+  position: relative;
   display: grid;
   width: 3.4rem;
   height: 3.4rem;
   grid-row: span 2;
   place-items: center;
-  border: 3px solid var(--color-accent);
-  border-right-color: var(--color-border);
-  border-radius: 50%;
-  transform: rotate(-22deg);
+}
+
+.progress-ring svg {
+  width: 100%;
+  height: 100%;
+  transform: rotate(-90deg);
+}
+
+.progress-ring circle {
+  fill: none;
+  stroke-width: 3;
+}
+
+.progress-ring-track {
+  stroke: var(--color-border);
+}
+
+.progress-ring-value {
+  stroke: var(--color-accent);
+  stroke-linecap: round;
+  transition: stroke-dashoffset 0.3s ease;
+}
+
+.progress-ring-label {
+  position: absolute;
+  color: var(--color-text);
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
 }
 
 .progress-rail strong {
@@ -1202,10 +1230,12 @@ input::placeholder {
 }
 
 .review-card.is-focused {
-  border-color: var(--color-accent);
+  border-color: var(--color-selection-highlight);
   box-shadow:
-    0 0.35rem 1rem color-mix(in srgb, var(--color-accent) 32%, transparent),
-    0 0 0 1px color-mix(in srgb, var(--color-accent) 42%, transparent);
+    0 0.35rem 1rem
+      color-mix(in srgb, var(--color-selection-highlight) 32%, transparent),
+    0 0 0 1px
+      color-mix(in srgb, var(--color-selection-highlight) 42%, transparent);
 }
 
 .review-card-heading {
@@ -1751,6 +1781,10 @@ body {
   flex-shrink: 0;
 }
 
+.progress-ring-label {
+  font-size: 0.8rem;
+}
+
 .progress-rail strong,
 .progress-rail small {
   position: absolute;
@@ -1838,6 +1872,7 @@ body {
 .review-queue-panel > h2,
 .review-comparison > h2,
 .review-decision > h2 {
+  flex-shrink: 0;
   margin: 0 0 0.3rem;
   font-size: 0.88rem;
 }
@@ -1882,6 +1917,7 @@ body {
 }
 
 .review-workspace .review-summary {
+  flex-shrink: 0;
   margin: 0.25rem 0;
   font-size: 0.68rem;
 }
@@ -1889,7 +1925,7 @@ body {
 .review-queue-panel .review-list {
   min-height: 0;
   flex: 1;
-  overflow: hidden;
+  overflow-y: auto;
   margin: 0;
   padding-left: 1.4rem;
 }
