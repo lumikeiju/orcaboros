@@ -74,6 +74,31 @@ describe("ReviewQueue", () => {
       screen.getByRole("heading", { name: "Comparison" })
     ).toBeInTheDocument();
     expect(container.querySelectorAll(".review-columns > *")).toHaveLength(3);
+    expect(
+      screen.getByRole("columnheader", { name: "GTFS" })
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("columnheader", { name: "OSM" })
+    ).toBeInTheDocument();
+    expect(
+      container.querySelectorAll(".review-diff-columns tbody tr")
+    ).toHaveLength(6);
+    expect(container.querySelectorAll(".review-diff-row.is-add")).toHaveLength(
+      4
+    );
+    expect(container.querySelectorAll(".review-diff-row.is-none")).toHaveLength(
+      2
+    );
+    expect(
+      container.querySelectorAll(
+        ".review-diff-row.is-add .review-diff-cell-add.is-highlighted"
+      )
+    ).toHaveLength(4);
+    expect(
+      container.querySelectorAll(
+        ".review-diff-row.is-add .review-diff-cell-remove.is-highlighted"
+      )
+    ).toHaveLength(0);
     fireEvent.click(
       screen.getByRole("button", {
         name: "Focus State Avenue & 92nd Street NE on the map"

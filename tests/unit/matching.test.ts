@@ -50,13 +50,23 @@ describe("conservative spatial matching", () => {
     expect(result.kind).toBe("review");
   });
 
-  it("reports conflicting source claims", () => {
+  it("allows distinct stops from one source feed to use different nodes", () => {
     const issues = validateSelectedClaims([
       { feature: { sourceFeedId: "US-WA-KCM", stopId: "1" }, nodeId: 1 },
       { feature: { sourceFeedId: "US-WA-KCM", stopId: "2" }, nodeId: 2 }
     ]);
+    expect(issues).toEqual([]);
+  });
+
+  it("reports the same stop claimed by multiple OSM nodes", () => {
+    const issues = validateSelectedClaims([
+      { feature: { sourceFeedId: "US-WA-KCM", stopId: "1" }, nodeId: 1 },
+      { feature: { sourceFeedId: "US-WA-KCM", stopId: "1" }, nodeId: 2 }
+    ]);
     expect(
-      issues.some((issue) => issue.includes("claimed by multiple OSM nodes"))
+      issues.some((issue) =>
+        issue.includes("US-WA-KCM/1 is claimed by multiple OSM nodes")
+      )
     ).toBe(true);
   });
 });

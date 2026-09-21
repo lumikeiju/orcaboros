@@ -6,8 +6,8 @@ import type {
 } from "maplibre-gl";
 import type { EligibleStop } from "../domain/gtfs";
 import type { CandidateMatch, InitialMatch } from "../domain/matching";
-import type { OsmNode } from "../domain/osm";
-import type { FeatureReview } from "../domain/review";
+import { elementKey, isOsmWay, type OsmElement } from "../domain/osm";
+import { selectedElementRef, type FeatureReview } from "../domain/review";
 import { identityTagKey } from "../domain/source-feed";
 
 export const MAP_STYLE_URLS = {
@@ -38,7 +38,7 @@ const GLOBE_PROJECTION: Parameters<MapLibreMap["setProjection"]>[0] = {
 type Theme = keyof typeof MAP_STYLE_URLS;
 
 type MapViewProps = {
-  nodes: readonly OsmNode[];
+  nodes: readonly OsmElement[];
   stops?: readonly EligibleStop[];
   matches?: ReadonlyMap<string, InitialMatch>;
   reviews?: ReadonlyMap<string, FeatureReview>;
@@ -320,12 +320,12 @@ function addFocusHaloLayers(
 }
 
 type MapData = {
-  nodes: readonly OsmNode[];
+  nodes: readonly OsmElement[];
   stops: readonly EligibleStop[];
   markers: readonly MapMarker[];
-  candidateNodes: readonly OsmNode[];
+  candidateNodes: readonly OsmElement[];
   focusedFeatureId: string | undefined;
-  focusedCandidateNodeIds: ReadonlySet<number>;
+  focusedCandidateNodeIds: ReadonlySet<string>;
 };
 
 type MapFeatureCollection = Parameters<GeoJSONSource["setData"]>[0];
@@ -354,8 +354,8 @@ export function getStopBounds(
 }
 
 function candidateFeatures(
-  nodes: readonly OsmNode[],
-  focusedNodeIds: ReadonlySet<number>
+  nodes: readonly OsmElement[],
+  focusedNodeIds: ReadonlySet<string>
 ) {
   return nodes.map((node) => ({
     type: "Feature" as const,
@@ -363,7 +363,10 @@ function candidateFeatures(
       type: "Point" as const,
       coordinates: [node.longitude, node.latitude]
     },
-    properties: { id: node.id, focused: focusedNodeIds.has(node.id) }
+    properties: {
+      id: elementKey(node),
+      focused: focusedNodeIds.has(elementKey(node))
+    }
   }));
 }
 
@@ -399,9 +402,9 @@ function exactIdentityCandidate(
 }
 
 function removedNodeIds(
-  nodes: readonly OsmNode[],
+  nodes: readonly OsmElement[],
   validStopIds: ReadonlyMap<string, ReadonlySet<string>>
-): ReadonlySet<number> {
+): ReadonlySet<string> {
   const identityKeys = new Map(
     [...validStopIds.keys()].map((sourceFeedId) => [
       identityTagKey(sourceFeedId),
@@ -417,19 +420,19 @@ function removedNodeIds(
           !validStopIds.get(sourceFeedId)?.has(value)
         );
       });
-      return isRemoved ? [node.id] : [];
+      return isRemoved ? [elementKey(node)] : [];
     })
   );
 }
 
 export function buildMapMarkers(
   stops: readonly EligibleStop[],
-  nodes: readonly OsmNode[],
+  nodes: readonly OsmElement[],
   matches: ReadonlyMap<string, InitialMatch> = new Map(),
   reviews: ReadonlyMap<string, FeatureReview> = new Map(),
   validStopIds: ReadonlyMap<string, ReadonlySet<string>> = new Map(),
   exactMatchRadiusMeters = Number.POSITIVE_INFINITY
-): { markers: readonly MapMarker[]; candidateNodes: readonly OsmNode[] } {
+): { markers: readonly MapMarker[]; candidateNodes: readonly OsmElement[] } {
   const markers: MapMarker[] = [];
 
   for (const stop of stops) {
@@ -460,9 +463,9 @@ export function buildMapMarkers(
 
   const removedIds = removedNodeIds(nodes, validStopIds);
   nodes.forEach((node) => {
-    if (removedIds.has(node.id)) {
+    if (removedIds.has(elementKey(node))) {
       markers.push({
-        id: `removed-${node.id}`,
+        id: `removed-${isOsmWay(node) ? elementKey(node) : node.id}`,
         kind: "removed",
         processed: false,
         latitude: node.latitude,
@@ -473,7 +476,7 @@ export function buildMapMarkers(
 
   return {
     markers,
-    candidateNodes: nodes.filter((node) => !removedIds.has(node.id))
+    candidateNodes: nodes.filter((node) => !removedIds.has(elementKey(node)))
   };
 }
 
@@ -481,22 +484,28 @@ function getFocusedCandidateNodeIds(
   focusedFeatureId: string | undefined,
   matches: ReadonlyMap<string, InitialMatch>,
   reviews: ReadonlyMap<string, FeatureReview>
-): ReadonlySet<number> {
+): ReadonlySet<string> {
   if (focusedFeatureId === undefined) {
     return new Set();
   }
   const result = matches.get(focusedFeatureId);
   if (result?.kind === "auto-matched") {
-    return new Set([result.candidate.node.id]);
+    return new Set([elementKey(result.candidate.node)]);
   }
   if (result?.kind !== "review") {
     return new Set();
   }
-  const selectedNodeId = reviews.get(focusedFeatureId)?.selectedNodeId;
-  if (selectedNodeId !== undefined) {
-    return new Set([selectedNodeId]);
+  const selectedElement = selectedElementRef(
+    reviews.get(focusedFeatureId) ?? {
+      selectedNodeId: undefined
+    }
+  );
+  if (selectedElement !== undefined) {
+    return new Set([elementKey(selectedElement)]);
   }
-  return new Set(result.candidates.map((candidate) => candidate.node.id));
+  return new Set(
+    result.candidates.map((candidate) => elementKey(candidate.node))
+  );
 }
 
 function updateMapSource(
@@ -537,8 +546,8 @@ function updateProcessedSource(
 
 function updateCandidateSource(
   instance: MapLibreMap,
-  nodes: readonly OsmNode[],
-  focusedNodeIds: ReadonlySet<number>
+  nodes: readonly OsmElement[],
+  focusedNodeIds: ReadonlySet<string>
 ): void {
   updateMapSource(instance, "osm-candidates", {
     type: "FeatureCollection",
@@ -579,6 +588,58 @@ function fitToStops(
     duration: 500,
     essential: true
   });
+}
+
+export function MapLegend(): ReactElement {
+  const [isOpen, setIsOpen] = useState(true);
+
+  return (
+    <aside className="map-legend" aria-labelledby="map-legend-heading">
+      <div className={`map-legend-header${isOpen ? " is-open" : ""}`}>
+        <h3 id="map-legend-heading">Map legend</h3>
+        <button
+          type="button"
+          className="map-legend-toggle"
+          aria-controls="map-legend-items"
+          aria-expanded={isOpen}
+          aria-label={`${isOpen ? "Collapse" : "Expand"} map legend`}
+          onClick={() => setIsOpen((open) => !open)}
+        >
+          <span className="map-legend-toggle-icon" aria-hidden="true" />
+        </button>
+      </div>
+      <ul id="map-legend-items" hidden={!isOpen}>
+        <li>
+          <span className="map-legend-marker is-matched" aria-hidden="true" />
+          Match found
+        </li>
+        <li>
+          <span className="map-legend-marker is-moved" aria-hidden="true" />
+          Moved
+        </li>
+        <li>
+          <span className="map-legend-marker is-new" aria-hidden="true" />
+          No candidate
+        </li>
+        <li>
+          <span className="map-legend-marker is-removed" aria-hidden="true" />
+          Removed
+        </li>
+        <li>
+          <span className="map-legend-marker is-pending" aria-hidden="true" />
+          Pending
+        </li>
+        <li>
+          <span className="map-legend-marker is-candidate" aria-hidden="true" />
+          Candidate
+        </li>
+        <li>
+          <span className="map-legend-processed" aria-hidden="true" />
+          Processed
+        </li>
+      </ul>
+    </aside>
+  );
 }
 
 export function MapView({
@@ -893,42 +954,7 @@ export function MapView({
           Zoom in to view data
         </button>
       )}
-      <aside className="map-legend" aria-labelledby="map-legend-heading">
-        <h3 id="map-legend-heading">Map legend</h3>
-        <ul>
-          <li>
-            <span className="map-legend-marker is-matched" aria-hidden="true" />
-            Match found
-          </li>
-          <li>
-            <span className="map-legend-marker is-moved" aria-hidden="true" />
-            Moved
-          </li>
-          <li>
-            <span className="map-legend-marker is-new" aria-hidden="true" />
-            No candidate
-          </li>
-          <li>
-            <span className="map-legend-marker is-removed" aria-hidden="true" />
-            Removed
-          </li>
-          <li>
-            <span className="map-legend-marker is-pending" aria-hidden="true" />
-            Pending
-          </li>
-          <li>
-            <span
-              className="map-legend-marker is-candidate"
-              aria-hidden="true"
-            />
-            Candidate
-          </li>
-          <li>
-            <span className="map-legend-processed" aria-hidden="true" />
-            Processed
-          </li>
-        </ul>
-      </aside>
+      <MapLegend />
       <p className="map-attribution">
         Basemap:{" "}
         {styleUrl === undefined

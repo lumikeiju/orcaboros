@@ -131,6 +131,35 @@ describe("ProfileEditor", () => {
     );
   });
 
+  it("changes street-name cleanup for an uploaded feed", () => {
+    const profile = getProfileForFeedId("US-WA-KCM");
+    if (profile === undefined) {
+      throw new Error("stock fixture profile is missing");
+    }
+    const onChange = vi.fn();
+    render(
+      <ProfileEditor profile={profile} onChange={onChange} onReset={vi.fn()} />
+    );
+
+    const cleanupToggle = screen.getByRole("switch", {
+      name: "Street name cleanup for US-WA-KCM"
+    });
+    expect(cleanupToggle).toHaveAttribute("aria-checked", "true");
+
+    fireEvent.click(cleanupToggle);
+
+    expect(onChange).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        sourceFeeds: [
+          expect.objectContaining({
+            id: "US-WA-KCM",
+            streetNameCleanup: false
+          })
+        ]
+      })
+    );
+  });
+
   it("separates mapping fields by uploaded feed", () => {
     const profile = getProfileForFeedIds(["US-WA-KCM", "US-WA-ST"]);
     if (profile === undefined) {

@@ -7,6 +7,8 @@ import {
   computeConflationProgress,
   computePostChangeTags,
   firstUndecidedFeatureId,
+  legacyIdentityKeys,
+  refreshTagProposals,
   staleIdentityKeys,
   validateReviewCompletion
 } from "../../src/domain/review";
@@ -50,6 +52,85 @@ describe("review state and tag decisions", () => {
     ).toBe("keep-current");
   });
 
+  it("accepts expanded names that are equivalent to the current name", () => {
+    const proposals = buildTagProposals(
+      {
+        ...node,
+        tags: {
+          name: "Merrill Creek Pkwy & Glenwood Ave - Westbound"
+        }
+      },
+      { name: "Merrill Creek Parkway & Glenwood Avenue - Westbound" }
+    );
+    const nameProposal = proposals.find((proposal) => proposal.key === "name");
+    expect(nameProposal?.resolution).toBe("accept-proposed");
+  });
+
+  it("exports the source identity and cleaned name during legacy migration", () => {
+    const stop = fixtureStop();
+    const matchingNode: OsmNode = {
+      ...node,
+      tags: {
+        "gtfs:stop_id": stop.stopId,
+        name: "Pine St"
+      }
+    };
+    const tags = computePostChangeTags(
+      matchingNode.tags,
+      buildTagProposals(
+        matchingNode,
+        {
+          [stop.identityTag.key]: stop.stopId,
+          name: stop.stopNameExpanded
+        },
+        [],
+        legacyIdentityKeys(matchingNode, stop)
+      )
+    );
+
+    expect(tags).toEqual({
+      [stop.identityTag.key]: stop.stopId,
+      name: "Pine Street"
+    });
+  });
+
+  it("refreshes legacy default proposals before output", () => {
+    const stop = fixtureStop();
+    const matchingNode: OsmNode = {
+      ...node,
+      tags: {
+        "gtfs:stop_id": stop.stopId,
+        name: "Pine St"
+      }
+    };
+    const previous = [
+      {
+        key: "name",
+        proposedValue: "Pine Street",
+        currentValue: "Pine St",
+        defaultResolution: "accept-proposed" as const,
+        resolution: "keep-current" as const,
+        stale: false
+      }
+    ];
+    const refreshed = refreshTagProposals(
+      previous,
+      matchingNode,
+      {
+        [stop.identityTag.key]: stop.stopId,
+        name: stop.stopNameExpanded
+      },
+      [],
+      legacyIdentityKeys(matchingNode, stop),
+      ["name"]
+    );
+
+    expect(computePostChangeTags(matchingNode.tags, refreshed)).toEqual({
+      [stop.identityTag.key]: stop.stopId,
+      name: "Pine Street"
+    });
+  });
+
   it("requires explicit removal for stale selected-source identities", () => {
     const keys = staleIdentityKeys(
       node,
@@ -66,6 +147,52 @@ describe("review state and tag decisions", () => {
     expect(computePostChangeTags(node.tags, updated)).not.toHaveProperty(
       "gtfs:stop_id:US-WA-KCM"
     );
+  });
+
+  it("removes a matching legacy generic identity tag", () => {
+    const matchingNode: OsmNode = {
+      ...node,
+      tags: {
+        "gtfs:stop_id": "1",
+        "gtfs:stop_id:US-WA-KCM": "1"
+      }
+    };
+    const removeKeys = legacyIdentityKeys(matchingNode, fixtureStop());
+    const proposals = buildTagProposals(
+      matchingNode,
+      { "gtfs:stop_id:US-WA-KCM": "1" },
+      [],
+      removeKeys
+    );
+    const legacyProposal = proposals.find(
+      (proposal) => proposal.key === "gtfs:stop_id"
+    );
+    expect(legacyProposal?.defaultResolution).toBe("remove");
+    expect(legacyProposal?.resolution).toBe("remove");
+    expect(
+      computePostChangeTags(matchingNode.tags, proposals)
+    ).not.toHaveProperty("gtfs:stop_id");
+  });
+
+  it("keeps a generic identity tag when the feed-specific value differs", () => {
+    const mismatchedNode: OsmNode = {
+      ...node,
+      tags: {
+        "gtfs:stop_id": "1",
+        "gtfs:stop_id:US-WA-KCM": "2"
+      }
+    };
+    expect(legacyIdentityKeys(mismatchedNode, fixtureStop())).toEqual([]);
+  });
+
+  it("removes a generic identity tag when the feed-specific tag is absent", () => {
+    const genericOnlyNode: OsmNode = {
+      ...node,
+      tags: { "gtfs:stop_id": "1" }
+    };
+    expect(legacyIdentityKeys(genericOnlyNode, fixtureStop())).toEqual([
+      "gtfs:stop_id"
+    ]);
   });
 
   it("makes skip and create explicit actions", () => {

@@ -9,8 +9,13 @@ import {
 } from "react";
 import { CandidateMatch, InitialMatch } from "../domain/matching";
 import { EligibleStop } from "../domain/gtfs";
-import { OsmNode } from "../domain/osm";
-import { FeatureReview, ReviewAction, TagResolution } from "../domain/review";
+import { elementKey, isOsmWay, OsmElement, OsmElementRef } from "../domain/osm";
+import {
+  FeatureReview,
+  ReviewAction,
+  selectedElementRef,
+  TagResolution
+} from "../domain/review";
 import { identityTagKey } from "../domain/source-feed";
 
 const REVIEW_PAGE_SIZE = 10;
@@ -28,7 +33,7 @@ type StopReviewItem = {
 type RemovedReviewItem = {
   kind: "removed";
   category: "removed";
-  node: OsmNode;
+  node: OsmElement;
   identityTags: readonly { key: string; value: string }[];
 };
 
@@ -37,14 +42,87 @@ type ReviewQueueItem = StopReviewItem | RemovedReviewItem;
 type ReviewFilters = Record<ReviewCategory, boolean>;
 
 function reviewQueueItemFeatureId(item: ReviewQueueItem): string {
-  return item.kind === "stop" ? item.stop.featureId : `removed-${item.node.id}`;
+  return item.kind === "stop"
+    ? item.stop.featureId
+    : `removed-${isOsmWay(item.node) ? elementKey(item.node) : item.node.id}`;
+}
+
+function elementDisplayLabel(element: OsmElement): "Node" | "Way" {
+  return isOsmWay(element) ? "Way" : "Node";
+}
+
+function elementRefFor(element: OsmElement): OsmElementRef {
+  return {
+    type: isOsmWay(element) ? "way" : "node",
+    id: element.id
+  };
+}
+
+function selectionAction(element: OsmElement): ReviewAction {
+  return isOsmWay(element)
+    ? { type: "select-element", element: elementRefFor(element) }
+    : { type: "select-match", nodeId: element.id };
+}
+
+function isSelected(
+  review: FeatureReview | undefined,
+  element: OsmElement
+): boolean {
+  const selected =
+    review === undefined ? undefined : selectedElementRef(review);
+  return selected !== undefined && elementKey(selected) === elementKey(element);
+}
+
+type DiffHighlight = "add" | "remove" | "both" | "none";
+
+type ReviewDiffRowProps = {
+  gtfsLabel: string;
+  gtfsValue: string;
+  osmLabel: string;
+  osmValue: string;
+  highlight: DiffHighlight;
+};
+
+function ReviewDiffRow({
+  gtfsLabel,
+  gtfsValue,
+  osmLabel,
+  osmValue,
+  highlight
+}: ReviewDiffRowProps): ReactElement {
+  const addHighlighted = highlight === "add" || highlight === "both";
+  const removeHighlighted = highlight === "remove" || highlight === "both";
+  return (
+    <tr className={`review-diff-row is-${highlight}`}>
+      <td
+        className={`review-diff-cell review-diff-cell-add${
+          addHighlighted ? " is-highlighted" : ""
+        }`}
+      >
+        <div className="review-diff-cell-content">
+          <span className="review-diff-field">{gtfsLabel}</span>
+          <span className="review-diff-value">{gtfsValue}</span>
+        </div>
+      </td>
+      <td
+        className={`review-diff-cell review-diff-cell-remove${
+          removeHighlighted ? " is-highlighted" : ""
+        }`}
+      >
+        <div className="review-diff-cell-content">
+          <span className="review-diff-field">{osmLabel}</span>
+          <span className="review-diff-value">{osmValue}</span>
+        </div>
+      </td>
+    </tr>
+  );
 }
 
 type ReviewQueueProps = {
   stops: readonly EligibleStop[];
   matches: ReadonlyMap<string, InitialMatch>;
   reviews: ReadonlyMap<string, FeatureReview>;
-  nodes?: readonly OsmNode[];
+  nodes?: readonly OsmElement[];
   validStopIds?: ReadonlyMap<string, ReadonlySet<string>>;
   exactMatchRadiusMeters?: number;
   onAction: (featureId: string, action: ReviewAction) => void;
@@ -258,17 +336,18 @@ export function ReviewQueue({
               <input
                 type="radio"
                 name={`candidate-${stop.featureId}`}
-                checked={review?.selectedNodeId === result.candidate.node.id}
+                checked={isSelected(review, result.candidate.node)}
                 onChange={() =>
-                  onAction(stop.featureId, {
-                    type: "select-match",
-                    nodeId: result.candidate.node.id
-                  })
+                  onAction(
+                    stop.featureId,
+                    selectionAction(result.candidate.node)
+                  )
                 }
               />
               <span className="evidence">
                 Exact identity match at{" "}
-                {result.candidate.distanceMeters.toFixed(1)} m on OSM node{" "}
+                {result.candidate.distanceMeters.toFixed(1)} m on OSM{" "}
+                {isOsmWay(result.candidate.node) ? "way" : "node"}{" "}
                 {result.candidate.node.id}.
               </span>
             </label>
@@ -276,23 +355,20 @@ export function ReviewQueue({
         )}
         {result?.kind === "review" && result.candidates.length > 0 && (
           <fieldset>
-            <legend>Candidate nodes</legend>
+            <legend>Candidate OSM elements</legend>
             {result.candidates.map((candidate) => (
-              <label className="choice" key={candidate.node.id}>
+              <label className="choice" key={elementKey(candidate.node)}>
                 <input
                   type="radio"
                   name={`candidate-${stop.featureId}`}
-                  checked={review?.selectedNodeId === candidate.node.id}
+                  checked={isSelected(review, candidate.node)}
                   onChange={() =>
-                    onAction(stop.featureId, {
-                      type: "select-match",
-                      nodeId: candidate.node.id
-                    })
+                    onAction(stop.featureId, selectionAction(candidate.node))
                   }
                 />
                 <span>
-                  OSM node {candidate.node.id},{" "}
-                  {candidate.distanceMeters.toFixed(1)} m
+                  OSM {isOsmWay(candidate.node) ? "way" : "node"}{" "}
+                  {candidate.node.id}, {candidate.distanceMeters.toFixed(1)} m
                   {candidate.exactIdentity ? " - exact identity" : ""}
                   {candidate.expandedNameEqual ? " - expanded name" : ""}
                 </span>
@@ -368,6 +444,7 @@ export function ReviewQueue({
 
   function renderRemovedCard(item: RemovedReviewItem): ReactElement {
     const featureId = reviewQueueItemFeatureId(item);
+    const elementLabel = isOsmWay(item.node) ? "way" : "node";
     return (
       <li
         key={featureId}
@@ -377,14 +454,16 @@ export function ReviewQueue({
         role="button"
         tabIndex={0}
         ref={focusedFeatureId === featureId ? focusedCardRef : undefined}
-        aria-label={`Focus OSM node ${item.node.id} on the map`}
+        aria-label={`Focus OSM ${elementLabel} ${item.node.id} on the map`}
         aria-pressed={focusedFeatureId === featureId}
         onClick={(event) => handleCardClick(event, featureId)}
         onKeyDown={(event) => handleCardKeyDown(event, featureId)}
       >
         <div className="review-card-heading">
           <div>
-            <h3>OSM node {item.node.id}</h3>
+            <h3>
+              OSM {elementLabel} {item.node.id}
+            </h3>
             <p>
               {item.node.latitude.toFixed(5)}, {item.node.longitude.toFixed(5)}
             </p>
@@ -409,76 +488,168 @@ export function ReviewQueue({
         <article className="review-detail">
           <div className="review-detail-heading">
             <div>
-              <p className="eyebrow">OSM identity</p>
-              <h3>Node {item.node.id}</h3>
+              <p className="eyebrow">Stop comparison</p>
+              <h3>
+                {elementDisplayLabel(item.node)} {item.node.id}
+              </h3>
             </div>
             <span className="category category-removed">removed</span>
           </div>
-          <p>This OSM identity is not present in the imported GTFS data.</p>
-          <ul>
-            {item.identityTags.map((tag) => (
-              <li key={tag.key}>
-                {tag.key}: {tag.value}
-              </li>
-            ))}
-          </ul>
+          <div className="review-diff">
+            <div className="review-diff-legend" aria-label="Diff legend">
+              <span className="review-diff-key review-diff-key-add">
+                <span aria-hidden="true">+</span> Add or update from GTFS
+              </span>
+              <span className="review-diff-key review-diff-key-remove">
+                <span aria-hidden="true">−</span> Remove or replace on OSM
+              </span>
+            </div>
+            <table className="review-diff-columns">
+              <caption className="visually-hidden">
+                GTFS values on the left and OSM values on the right
+              </caption>
+              <thead>
+                <tr>
+                  <th scope="col">GTFS</th>
+                  <th scope="col">OSM</th>
+                </tr>
+              </thead>
+              <tbody>
+                <ReviewDiffRow
+                  gtfsLabel={elementDisplayLabel(item.node)}
+                  gtfsValue="(not present)"
+                  osmLabel={elementDisplayLabel(item.node)}
+                  osmValue={String(item.node.id)}
+                  highlight="remove"
+                />
+                <ReviewDiffRow
+                  gtfsLabel="latitude"
+                  gtfsValue="(not present)"
+                  osmLabel="center latitude"
+                  osmValue={item.node.latitude.toFixed(6)}
+                  highlight="remove"
+                />
+                <ReviewDiffRow
+                  gtfsLabel="longitude"
+                  gtfsValue="(not present)"
+                  osmLabel="center longitude"
+                  osmValue={item.node.longitude.toFixed(6)}
+                  highlight="remove"
+                />
+                {item.identityTags.map((tag) => (
+                  <ReviewDiffRow
+                    key={tag.key}
+                    gtfsLabel={tag.key}
+                    gtfsValue="(not present)"
+                    osmLabel={tag.key}
+                    osmValue={tag.value}
+                    highlight="remove"
+                  />
+                ))}
+              </tbody>
+            </table>
+          </div>
         </article>
       );
     }
     const { stop, result, review } = item;
     const candidate = getPrimaryCandidate(result);
+    const gtfsIdentity = stop.stopId;
+    const osmIdentity = candidate?.node.tags[stop.identityTag.key];
+    const gtfsName = stop.stopNameExpanded;
+    const osmName = candidate?.node.tags.name;
+    const gtfsLatitude = stop.latitude.toFixed(6);
+    const osmLatitude = candidate?.node.latitude.toFixed(6);
+    const gtfsLongitude = stop.longitude.toFixed(6);
+    const osmLongitude = candidate?.node.longitude.toFixed(6);
+    const highlightComparedValues = (
+      gtfsValue: string,
+      osmValue: string | undefined
+    ): DiffHighlight => {
+      if (osmValue === undefined) {
+        return "add";
+      }
+      return gtfsValue === osmValue ? "none" : "both";
+    };
     return (
       <article className="review-detail">
         <div className="review-detail-heading">
           <div>
-            <p className="eyebrow">GTFS source</p>
+            <p className="eyebrow">Stop comparison</p>
             <h3>{stop.stopNameExpanded}</h3>
           </div>
           <span className={`state state-${review?.state ?? "unreviewed"}`}>
             {review?.state ?? "unreviewed"}
           </span>
         </div>
-        <div className="review-detail-columns">
-          <dl>
-            <div>
-              <dt>stop_id</dt>
-              <dd>{stop.stopId}</dd>
-            </div>
-            <div>
-              <dt>stop_name</dt>
-              <dd>{stop.stopNameExpanded}</dd>
-            </div>
-            <div>
-              <dt>stop_lat</dt>
-              <dd>{stop.latitude.toFixed(6)}</dd>
-            </div>
-            <div>
-              <dt>stop_lon</dt>
-              <dd>{stop.longitude.toFixed(6)}</dd>
-            </div>
-          </dl>
-          <dl>
-            <div>
-              <dt>OSM candidate</dt>
-              <dd>{candidate?.node.id ?? "No candidate"}</dd>
-            </div>
-            <div>
-              <dt>name</dt>
-              <dd>{candidate?.node.tags.name ?? "(missing)"}</dd>
-            </div>
-            <div>
-              <dt>distance</dt>
-              <dd>
-                {candidate === undefined
-                  ? "-"
-                  : `${candidate.distanceMeters.toFixed(0)} m`}
-              </dd>
-            </div>
-            <div>
-              <dt>highway</dt>
-              <dd>{candidate?.node.tags.highway ?? "(missing)"}</dd>
-            </div>
-          </dl>
+        <div className="review-diff">
+          <div className="review-diff-legend" aria-label="Diff legend">
+            <span className="review-diff-key review-diff-key-add">
+              <span aria-hidden="true">+</span> Add or update from GTFS
+            </span>
+            <span className="review-diff-key review-diff-key-remove">
+              <span aria-hidden="true">−</span> Remove or replace on OSM
+            </span>
+          </div>
+          <table className="review-diff-columns">
+            <caption className="visually-hidden">
+              GTFS values on the left and OSM values on the right
+            </caption>
+            <thead>
+              <tr>
+                <th scope="col">GTFS</th>
+                <th scope="col">OSM</th>
+              </tr>
+            </thead>
+            <tbody>
+              <ReviewDiffRow
+                gtfsLabel="stop_id"
+                gtfsValue={gtfsIdentity}
+                osmLabel="identity"
+                osmValue={osmIdentity ?? "(missing)"}
+                highlight={highlightComparedValues(gtfsIdentity, osmIdentity)}
+              />
+              <ReviewDiffRow
+                gtfsLabel="stop_name"
+                gtfsValue={gtfsName}
+                osmLabel="name"
+                osmValue={osmName ?? "(missing)"}
+                highlight={highlightComparedValues(gtfsName, osmName)}
+              />
+              <ReviewDiffRow
+                gtfsLabel="stop_lat"
+                gtfsValue={gtfsLatitude}
+                osmLabel="latitude"
+                osmValue={osmLatitude ?? "(missing)"}
+                highlight={highlightComparedValues(gtfsLatitude, osmLatitude)}
+              />
+              <ReviewDiffRow
+                gtfsLabel="stop_lon"
+                gtfsValue={gtfsLongitude}
+                osmLabel="longitude"
+                osmValue={osmLongitude ?? "(missing)"}
+                highlight={highlightComparedValues(gtfsLongitude, osmLongitude)}
+              />
+              <ReviewDiffRow
+                gtfsLabel="(metadata)"
+                gtfsValue="—"
+                osmLabel="highway"
+                osmValue={candidate?.node.tags.highway ?? "(missing)"}
+                highlight="none"
+              />
+              <ReviewDiffRow
+                gtfsLabel="(metadata)"
+                gtfsValue="—"
+                osmLabel="distance"
+                osmValue={
+                  candidate === undefined
+                    ? "-"
+                    : `${candidate.distanceMeters.toFixed(0)} m`
+                }
+                highlight="none"
+              />
+            </tbody>
+          </table>
         </div>
       </article>
     );
@@ -493,10 +664,10 @@ export function ReviewQueue({
             type="button"
             className="decision-accept"
             onClick={() =>
-              handleDecisionAction(item.stop.featureId, {
-                type: "select-match",
-                nodeId: candidate.node.id
-              })
+              handleDecisionAction(
+                item.stop.featureId,
+                selectionAction(candidate.node)
+              )
             }
           >
             Accept match

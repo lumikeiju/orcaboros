@@ -6,7 +6,7 @@ Orcaboros is a static React/Vite application. The browser is the only runtime; t
 
 - `src/domain/` contains framework-independent types and pure rules. It owns feed identity, stop eligibility, profile validation, spatial evidence, review state, session compatibility, and export contracts.
 - `src/infrastructure/gtfs/` streams local ZIP bytes into the `stops.txt` CSV parser. The importer never opens timetable files and never persists raw ZIP bytes.
-- `src/infrastructure/osm/` constructs bounded Overpass POST requests, parses node-only responses, performs local matching, and serializes OSM Change XML. The endpoint is passed only to the request function and is never part of a persisted type.
+- `src/infrastructure/osm/` constructs bounded Overpass POST requests, parses OSM nodes and tagged platform ways into point candidates, performs local matching, and serializes OSM Change XML. Platform ways retain their member references so tag changes can be exported without changing their geometry. The endpoint is passed only to the request function and is never part of a persisted type.
 - `src/storage/` owns IndexedDB records. Records are keyed by immutable session IDs and contain no operational endpoint URLs.
 - `src/workers/` contains long-running import and matching message contracts. Worker errors are typed and sanitized before they reach the UI.
 - `src/components/` and `src/features/` contain React presentation and interaction. They consume domain contracts rather than importing domain code from browser-specific modules.

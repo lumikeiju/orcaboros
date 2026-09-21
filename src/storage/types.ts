@@ -1,7 +1,7 @@
 import { ChangeDraft } from "../domain/change";
 import { FeedImportResult, EligibleStop } from "../domain/gtfs";
 import { MappingProfile } from "../domain/profile";
-import { OsmNode, BoundingBox } from "../domain/osm";
+import { BoundingBox, OsmElement } from "../domain/osm";
 import { FeatureReview } from "../domain/review";
 import { SessionManifest } from "../domain/session";
 
@@ -20,7 +20,7 @@ export type StoredOsmSnapshot = {
   snapshotId: string;
   timestamp: string;
   bounds: BoundingBox;
-  nodes: readonly OsmNode[];
+  nodes: readonly OsmElement[];
 };
 
 export type StoredSession = {

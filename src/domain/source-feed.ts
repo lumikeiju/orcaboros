@@ -3,12 +3,14 @@ export const CONSOLIDATED_SOURCE_FEED_ID = "US-WA-PSC";
 export type GeometryTarget = "gtfs" | "osm";
 
 export const DEFAULT_GEOMETRY_TARGET: GeometryTarget = "osm";
+export const DEFAULT_STREET_NAME_CLEANUP = true;
 
 export type SourceFeedDefinition = {
   id: string;
   displayName: string;
   enabled: boolean;
   geometryTarget: GeometryTarget;
+  streetNameCleanup?: boolean;
   metadata?: Readonly<Record<string, string>>;
 };
 
@@ -17,55 +19,64 @@ export const STOCK_SOURCE_FEED_DEFINITIONS: readonly SourceFeedDefinition[] = [
     id: "US-WA-CT",
     displayName: "Community Transit",
     enabled: true,
-    geometryTarget: DEFAULT_GEOMETRY_TARGET
+    geometryTarget: DEFAULT_GEOMETRY_TARGET,
+    streetNameCleanup: DEFAULT_STREET_NAME_CLEANUP
   },
   {
     id: "US-WA-ET",
     displayName: "Everett Transit",
     enabled: true,
-    geometryTarget: DEFAULT_GEOMETRY_TARGET
+    geometryTarget: DEFAULT_GEOMETRY_TARGET,
+    streetNameCleanup: DEFAULT_STREET_NAME_CLEANUP
   },
   {
     id: "US-WA-IT",
     displayName: "Intercity Transit",
     enabled: true,
-    geometryTarget: DEFAULT_GEOMETRY_TARGET
+    geometryTarget: DEFAULT_GEOMETRY_TARGET,
+    streetNameCleanup: DEFAULT_STREET_NAME_CLEANUP
   },
   {
     id: "US-WA-KCM",
     displayName: "King County Metro",
     enabled: true,
-    geometryTarget: DEFAULT_GEOMETRY_TARGET
+    geometryTarget: DEFAULT_GEOMETRY_TARGET,
+    streetNameCleanup: DEFAULT_STREET_NAME_CLEANUP
   },
   {
     id: "US-WA-KT",
     displayName: "Kitsap Transit",
     enabled: true,
-    geometryTarget: DEFAULT_GEOMETRY_TARGET
+    geometryTarget: DEFAULT_GEOMETRY_TARGET,
+    streetNameCleanup: DEFAULT_STREET_NAME_CLEANUP
   },
   {
     id: "US-WA-PT",
     displayName: "Pierce Transit",
     enabled: true,
-    geometryTarget: DEFAULT_GEOMETRY_TARGET
+    geometryTarget: DEFAULT_GEOMETRY_TARGET,
+    streetNameCleanup: DEFAULT_STREET_NAME_CLEANUP
   },
   {
     id: "US-WA-SCM",
     displayName: "Seattle Center Monorail",
     enabled: true,
-    geometryTarget: DEFAULT_GEOMETRY_TARGET
+    geometryTarget: DEFAULT_GEOMETRY_TARGET,
+    streetNameCleanup: DEFAULT_STREET_NAME_CLEANUP
   },
   {
     id: "US-WA-ST",
     displayName: "Sound Transit",
     enabled: true,
-    geometryTarget: DEFAULT_GEOMETRY_TARGET
+    geometryTarget: DEFAULT_GEOMETRY_TARGET,
+    streetNameCleanup: DEFAULT_STREET_NAME_CLEANUP
   },
   {
     id: "US-WA-WSF",
     displayName: "Washington State Ferries",
     enabled: true,
-    geometryTarget: DEFAULT_GEOMETRY_TARGET
+    geometryTarget: DEFAULT_GEOMETRY_TARGET,
+    streetNameCleanup: DEFAULT_STREET_NAME_CLEANUP
   }
 ];
 

@@ -82,7 +82,16 @@ describe("source-feed identity", () => {
     }
   });
 
-  it("maps the GTFS stop name to the OSM name tag for every stock profile", () => {
+  it("maps Everett Transit stop codes to the OSM ref tag", () => {
+    const profile = getProfileForFeedId("US-WA-ET");
+    expect(profile?.mappingRules).toContainEqual({
+      key: "ref",
+      value: { kind: "field", field: "stop_code" },
+      appliesTo: { sourceFeedIds: ["US-WA-ET"] }
+    });
+  });
+
+  it("maps the cleaned GTFS stop name to the OSM name tag for every stock profile", () => {
     for (const source of STOCK_SOURCE_FEED_DEFINITIONS) {
       const profile = getProfileForFeedId(source.id);
       if (profile === undefined) {
@@ -90,17 +99,75 @@ describe("source-feed identity", () => {
       }
       expect(profile.mappingRules).toContainEqual({
         key: "name",
-        value: { kind: "field", field: "stop_name" }
+        value: { kind: "field", field: "stop_name_expanded" }
       });
       expect(profile.mappingRules).not.toEqual(
         expect.arrayContaining([
           {
             key: "name",
-            value: { kind: "field", field: "stop_name_expanded" }
+            value: { kind: "field", field: "stop_name" }
           }
         ])
       );
     }
+  });
+
+  it("defaults street-name cleanup on for legacy profiles", () => {
+    const profile = validateMappingProfile({
+      schemaVersion: 1,
+      id: "legacy-cleanup",
+      name: "Legacy cleanup",
+      version: "1.0.0",
+      sourceFeeds: [
+        { id: "US-WA-KCM", displayName: "King County Metro", enabled: true }
+      ],
+      mappingRules: [],
+      candidateRadiusMeters: 50,
+      autoIdRadiusMeters: 10
+    });
+
+    expect(profile.sourceFeeds[0]?.streetNameCleanup).toBe(true);
+  });
+
+  it("validates and preserves an explicit street-name cleanup setting", () => {
+    const disabled = validateMappingProfile({
+      schemaVersion: 1,
+      id: "disabled-cleanup",
+      name: "Disabled cleanup",
+      version: "1.0.0",
+      sourceFeeds: [
+        {
+          id: "US-WA-KCM",
+          displayName: "King County Metro",
+          enabled: true,
+          streetNameCleanup: false
+        }
+      ],
+      mappingRules: [],
+      candidateRadiusMeters: 50,
+      autoIdRadiusMeters: 10
+    });
+    expect(disabled.sourceFeeds[0]?.streetNameCleanup).toBe(false);
+
+    expect(() =>
+      validateMappingProfile({
+        schemaVersion: 1,
+        id: "invalid-cleanup",
+        name: "Invalid cleanup",
+        version: "1.0.0",
+        sourceFeeds: [
+          {
+            id: "US-WA-KCM",
+            displayName: "King County Metro",
+            enabled: true,
+            streetNameCleanup: "yes"
+          }
+        ],
+        mappingRules: [],
+        candidateRadiusMeters: 50,
+        autoIdRadiusMeters: 10
+      })
+    ).toThrow(ProfileValidationError);
   });
 
   it("looks up a stock profile by normalized feed ID", () => {

@@ -1,11 +1,11 @@
 import { EligibleStop } from "../../domain/gtfs";
 import { InitialMatch } from "../../domain/matching";
-import { OsmNode } from "../../domain/osm";
+import { OsmElement } from "../../domain/osm";
 import type { MatchingMessage } from "../../workers/matching.worker";
 
 export function matchStopsInWorker(
   stops: readonly EligibleStop[],
-  nodes: readonly OsmNode[],
+  nodes: readonly OsmElement[],
   candidateRadiusMeters: number,
   autoIdRadiusMeters: number,
   onProgress?: (processed: number, total: number) => void

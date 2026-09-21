@@ -101,4 +101,22 @@ describe("streaming GTFS importer", () => {
     expect(imported.sourceFeedId).toBe("US-WA-ST");
     expect(imported.result.eligibleStops[0]?.sourceFeedId).toBe("US-WA-ST");
   });
+
+  it("passes the per-feed street-name cleanup setting to stop parsing", async () => {
+    const definitions = STOCK_SOURCE_FEED_DEFINITIONS.map((definition) =>
+      definition.id === "US-WA-KCM"
+        ? { ...definition, streetNameCleanup: false }
+        : definition
+    );
+    const imported = await importGtfsArchive(
+      archiveWithStops(
+        "stop_id,stop_name,stop_lat,stop_lon\nstop-1,3rd Ave & Pine St,47,-122"
+      ),
+      { definitions }
+    );
+
+    expect(imported.result.eligibleStops[0]?.stopNameExpanded).toBe(
+      "3rd Ave & Pine St"
+    );
+  });
 });

@@ -13,6 +13,15 @@ function post(message: GtfsWorkerMessage): void {
   workerScope.postMessage(message);
 }
 
+function serializeResult(
+  result: Awaited<ReturnType<typeof importGtfsArchive>>["result"]
+): Extract<GtfsWorkerMessage, { type: "complete" }>["result"] {
+  return {
+    ...result,
+    validStopIds: [...result.validStopIds]
+  };
+}
+
 function safeError(error: unknown): { code: string; message: string } {
   if (error instanceof GtfsImportError) {
     return { code: error.code, message: error.detail };
@@ -61,7 +70,7 @@ async function runImport(request: GtfsWorkerImportRequest): Promise<void> {
       requestId: request.requestId,
       sourceFeedId: imported.sourceFeedId,
       archiveFingerprint: imported.archiveFingerprint,
-      result: imported.result
+      result: serializeResult(imported.result)
     });
   } catch (error) {
     post({

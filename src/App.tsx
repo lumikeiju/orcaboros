@@ -25,7 +25,11 @@ import {
   getProfileForFeedIds
 } from "./profiles";
 import { MappingProfile } from "./domain/profile";
-import { EligibleStop, FeedImportResult } from "./domain/gtfs";
+import {
+  applyStreetNameCleanup,
+  EligibleStop,
+  FeedImportResult
+} from "./domain/gtfs";
 import { InitialMatch, validateSelectedClaims } from "./domain/matching";
 import {
   FeatureReview,
@@ -34,9 +38,13 @@ import {
   computeConflationProgress,
   firstUndecidedFeatureId,
   computePostChangeTags,
+  legacyIdentityKeys,
+  removeTags,
+  refreshTagProposals,
+  selectedElementRef,
   staleIdentityKeys
 } from "./domain/review";
-import { OsmNode } from "./domain/osm";
+import { elementKey, isOsmWay, osmElementRef, OsmElement } from "./domain/osm";
 import {
   ChangeDraft,
   coordinatesForGeometryTarget,
@@ -51,7 +59,7 @@ import {
   buildOverpassRequests,
   identityKeysForSourceFeeds,
   OverpassRequestError,
-  retrieveOverpassNodes,
+  retrieveOverpassElements,
   workingBoundsForStops
 } from "./infrastructure/osm";
 import { matchStopsInWorker } from "./features/matching/worker-client";
@@ -60,10 +68,12 @@ import {
   createProgressThrottleState,
   shouldPublishProgress
 } from "./infrastructure/browser/progress";
-import { serializeOsmChange } from "./infrastructure/osm/change-export";
+import { downloadTextFile } from "./infrastructure/browser/download";
+import { serializeJosmOsm } from "./infrastructure/osm/change-export";
 import {
   CONSOLIDATED_SOURCE_FEED_ID,
   DEFAULT_GEOMETRY_TARGET,
+  DEFAULT_STREET_NAME_CLEANUP,
   identityTagKey,
   normalizeSourceFeedId,
   STOCK_SOURCE_FEED_DEFINITIONS
@@ -113,6 +123,37 @@ function formatBytes(bytes: number): string {
   return `${rounded} ${units[unitIndex]}`;
 }
 
+function applyProfileStreetNameCleanup(
+  profile: MappingProfile,
+  stop: EligibleStop
+): EligibleStop {
+  const sourceFeed = profile.sourceFeeds.find(
+    (candidate) => candidate.id === stop.sourceFeedId
+  );
+  return applyStreetNameCleanup(
+    stop,
+    sourceFeed?.streetNameCleanup ?? DEFAULT_STREET_NAME_CLEANUP
+  );
+}
+
+function outputMapping(
+  profile: MappingProfile,
+  stop: EligibleStop
+): {
+  tags: ReturnType<typeof mapStopToOsmTags>;
+  forceAcceptKeys: readonly string[];
+} {
+  const tags = mapStopToOsmTags(profile, stop);
+  return {
+    tags,
+    forceAcceptKeys:
+      tags.name === stop.stopNameExpanded &&
+      stop.stopNameExpanded !== stop.stopName
+        ? ["name"]
+        : []
+  };
+}
+
 export function App(): ReactElement {
   const [theme, setTheme] = useState<Theme>("dark");
   const [profile, setProfile] = useState<MappingProfile>(getDefaultProfile());
@@ -125,7 +166,7 @@ export function App(): ReactElement {
   const [validStopIds, setValidStopIds] = useState<
     ReadonlyMap<string, ReadonlySet<string>>
   >(new Map());
-  const [nodes, setNodes] = useState<readonly OsmNode[]>([]);
+  const [nodes, setNodes] = useState<readonly OsmElement[]>([]);
   const [retrievalComplete, setRetrievalComplete] = useState(false);
   const [matches, setMatches] = useState<ReadonlyMap<string, InitialMatch>>(
     new Map()
@@ -143,6 +184,7 @@ export function App(): ReactElement {
   const [styleUrl, setStyleUrl] = useState("");
   const [status, setStatus] = useState("Select local feeds to begin.");
   const [error, setError] = useState<string | undefined>();
+  const [exportError, setExportError] = useState<string | undefined>();
   const [loading, setLoading] = useState(false);
   const [importActive, setImportActive] = useState(false);
   const [importProgress, setImportProgress] = useState<ImportProgressState>();
@@ -189,15 +231,21 @@ export function App(): ReactElement {
         if (!active || session === undefined) {
           return;
         }
-        setProfile({
+        const restoredProfile: MappingProfile = {
           ...session.profile,
           sourceFeeds: session.profile.sourceFeeds.map((sourceFeed) => ({
             ...sourceFeed,
-            geometryTarget: sourceFeed.geometryTarget ?? DEFAULT_GEOMETRY_TARGET
+            geometryTarget:
+              sourceFeed.geometryTarget ?? DEFAULT_GEOMETRY_TARGET,
+            streetNameCleanup:
+              sourceFeed.streetNameCleanup ?? DEFAULT_STREET_NAME_CLEANUP
           }))
-        });
-        const restoredStops = session.sourceFeeds.flatMap(
-          (source) => source.eligibleStops
+        };
+        setProfile(restoredProfile);
+        const remapStop = (stop: EligibleStop): EligibleStop =>
+          applyProfileStreetNameCleanup(restoredProfile, stop);
+        const restoredStops = session.sourceFeeds.flatMap((source) =>
+          source.eligibleStops.map(remapStop)
         );
         setStops(restoredStops);
         setFeedSummaries(
@@ -211,7 +259,7 @@ export function App(): ReactElement {
                 )
               )
             ],
-            eligibleStops: source.eligibleStops,
+            eligibleStops: source.eligibleStops.map(remapStop),
             validStopIds: new Set(source.validStopIds),
             diagnostics: source.diagnostics,
             counts: source.counts
@@ -445,17 +493,17 @@ export function App(): ReactElement {
       ]);
       const requests = buildOverpassRequests(bounds, identityKeys);
       setOsmProgress({ phase: "query", processed: 0, total: requests.length });
-      const nodesById = new Map<number, OsmNode>();
+      const nodesById = new Map<string, OsmElement>();
       for (const [requestIndex, request] of requests.entries()) {
         setStatus(
           `Retrieving OSM candidates (${requestIndex + 1}/${requests.length})`
         );
-        const requestNodes = await retrieveOverpassNodes(
+        const requestNodes = await retrieveOverpassElements(
           endpoint,
           request.query,
           controller.signal
         );
-        requestNodes.forEach((node) => nodesById.set(node.id, node));
+        requestNodes.forEach((node) => nodesById.set(elementKey(node), node));
         setOsmProgress({
           phase: "query",
           processed: requestIndex + 1,
@@ -468,7 +516,7 @@ export function App(): ReactElement {
           ? { kind: "empty", requestCount: requests.length }
           : {
               kind: "success",
-              nodeCount: retrieved.length,
+              elementCount: retrieved.length,
               requestCount: requests.length
             }
       );
@@ -536,15 +584,25 @@ export function App(): ReactElement {
                   ],
                   validStopIds
                 );
+          const removeKeys =
+            node === undefined ? [] : legacyIdentityKeys(node, stop);
           return [
             stop.featureId,
             {
               featureId: stop.featureId,
               state:
                 result?.kind === "auto-matched" ? "auto-matched" : "unreviewed",
-              selectedNodeId: node?.id,
+              selectedNodeId:
+                node !== undefined && !isOsmWay(node) ? node.id : undefined,
+              selectedElement:
+                node === undefined ? undefined : osmElementRef(node),
               createCoordinates: undefined,
-              proposals: buildTagProposals(node, mappedTags, staleKeys)
+              proposals: buildTagProposals(
+                node,
+                mappedTags,
+                staleKeys,
+                removeKeys
+              )
             } satisfies FeatureReview
           ];
         })
@@ -554,8 +612,8 @@ export function App(): ReactElement {
       setRetrievalComplete(true);
       setStatus(
         retrieved.length === 0
-          ? "Overpass returned no OSM candidate nodes."
-          : `Retrieved ${retrieved.length} OSM candidate nodes for review.`
+          ? "Overpass returned no OSM candidate elements."
+          : `Retrieved ${retrieved.length} OSM candidate elements for review.`
       );
     } catch (caught: unknown) {
       const message =
@@ -594,12 +652,22 @@ export function App(): ReactElement {
     let updated = applyReviewAction(current, action);
     if (
       stop !== undefined &&
-      (action.type === "select-match" || action.type === "select-create")
+      (action.type === "select-match" ||
+        action.type === "select-element" ||
+        action.type === "select-create")
     ) {
-      const node =
+      const selected =
         action.type === "select-match"
-          ? nodes.find((candidate) => candidate.id === action.nodeId)
-          : undefined;
+          ? { type: "node" as const, id: action.nodeId }
+          : action.type === "select-element"
+            ? action.element
+            : undefined;
+      const node =
+        selected === undefined
+          ? undefined
+          : nodes.find(
+              (candidate) => elementKey(candidate) === elementKey(selected)
+            );
       const staleKeys =
         node === undefined
           ? []
@@ -608,12 +676,15 @@ export function App(): ReactElement {
               [...new Set(stops.map((candidate) => candidate.sourceFeedId))],
               validStopIds
             );
+      const removeKeys =
+        node === undefined ? [] : legacyIdentityKeys(node, stop);
       updated = {
         ...updated,
         proposals: buildTagProposals(
           node,
           mapStopToOsmTags(profile, stop),
-          staleKeys
+          staleKeys,
+          removeKeys
         )
       };
     }
@@ -651,20 +722,22 @@ export function App(): ReactElement {
     const claimIssues = validateSelectedClaims(
       stops.flatMap((stop) => {
         const review = reviews.get(stop.featureId);
-        return review !== undefined &&
-          (review.state === "match-selected" ||
-            review.state === "auto-matched") &&
-          review.selectedNodeId !== undefined
-          ? [{ feature: stop, nodeId: review.selectedNodeId }]
-          : [];
+        if (
+          review === undefined ||
+          (review.state !== "match-selected" && review.state !== "auto-matched")
+        ) {
+          return [];
+        }
+        const elementRef = selectedElementRef(review);
+        return elementRef === undefined ? [] : [{ feature: stop, elementRef }];
       })
     );
     if (claimIssues.length > 0) {
       throw new Error(claimIssues.join("; "));
     }
-    const nodeById = new Map(nodes.map((node) => [node.id, node]));
+    const elementByKey = new Map(nodes.map((node) => [elementKey(node), node]));
     const creates: DraftCreate[] = [];
-    const modifications = new Map<number, DraftModify>();
+    const modifications = new Map<string, DraftModify>();
     for (const stop of stops) {
       const review = reviews.get(stop.featureId);
       if (
@@ -678,22 +751,32 @@ export function App(): ReactElement {
         if (review.createCoordinates === undefined) {
           throw new Error(`${stop.featureId} has no create coordinates`);
         }
+        const mapping = outputMapping(profile, stop);
+        const proposals = refreshTagProposals(
+          review.proposals,
+          undefined,
+          mapping.tags,
+          [],
+          [],
+          mapping.forceAcceptKeys
+        );
         creates.push({
           feature: stop,
           state: "create-selected",
           latitude: review.createCoordinates.latitude,
           longitude: review.createCoordinates.longitude,
-          tags: computePostChangeTags({}, review.proposals)
+          tags: computePostChangeTags({}, proposals)
         });
         continue;
       }
-      if (review.selectedNodeId === undefined) {
-        throw new Error(`${stop.featureId} has no selected OSM node`);
+      const selected = selectedElementRef(review);
+      if (selected === undefined) {
+        throw new Error(`${stop.featureId} has no selected OSM element`);
       }
-      const node = nodeById.get(review.selectedNodeId);
-      if (node === undefined) {
+      const element = elementByKey.get(elementKey(selected));
+      if (element === undefined) {
         throw new Error(
-          `${stop.featureId} refers to a node outside the current snapshot`
+          `${stop.featureId} refers to an element outside the current snapshot`
         );
       }
       const sourceFeed = profile.sourceFeeds.find(
@@ -704,29 +787,44 @@ export function App(): ReactElement {
       const coordinates = coordinatesForGeometryTarget(
         sourceFeed?.geometryTarget ?? "osm",
         stop,
-        node
+        element
       );
-      const existing = modifications.get(node.id);
+      const existing = modifications.get(elementKey(element));
       if (
         existing !== undefined &&
         (existing.coordinates.latitude !== coordinates.latitude ||
           existing.coordinates.longitude !== coordinates.longitude)
       ) {
         throw new Error(
-          `${node.id} has conflicting geometry targets for selected features`
+          `${element.id} has conflicting geometry targets for selected features`
         );
       }
-      const tags = computePostChangeTags(
-        existing?.tags ?? node.tags,
-        review.proposals
+      const staleKeys = staleIdentityKeys(
+        element,
+        [...new Set(stops.map((candidate) => candidate.sourceFeedId))],
+        validStopIds
+      );
+      const removeKeys = legacyIdentityKeys(element, stop);
+      const mapping = outputMapping(profile, stop);
+      const proposals = refreshTagProposals(
+        review.proposals,
+        element,
+        mapping.tags,
+        staleKeys,
+        removeKeys,
+        mapping.forceAcceptKeys
+      );
+      const tags = removeTags(
+        computePostChangeTags(existing?.tags ?? element.tags, proposals),
+        removeKeys
       );
       if (tags[identityTagKey(stop.sourceFeedId)] !== stop.stopId) {
         throw new Error(
           `${stop.featureId} does not have its required identity tag`
         );
       }
-      modifications.set(node.id, {
-        node,
+      modifications.set(elementKey(element), {
+        node: element,
         coordinates,
         featureIds: [...(existing?.featureIds ?? []), stop.featureId],
         requiredIdentityTags: [
@@ -745,9 +843,13 @@ export function App(): ReactElement {
   }
 
   async function exportDraft(): Promise<void> {
+    setExportError(undefined);
     try {
       const draft = createDraft();
-      const activeSession = await repository.getActiveSession();
+      const xml = serializeJosmOsm(draft);
+      const activeSessionPromise = repository.getActiveSession();
+      downloadTextFile(xml, "orcaboros.osm", "application/xml");
+      const activeSession = await activeSessionPromise;
       if (activeSession === undefined) {
         throw new Error("The active GTFS session is no longer available");
       }
@@ -756,24 +858,17 @@ export function App(): ReactElement {
         reviews: [...reviews.values()],
         draft
       });
-      const xml = serializeOsmChange(draft);
-      const blob = new Blob([xml], { type: "application/xml" });
-      const url = URL.createObjectURL(blob);
-      const anchor = document.createElement("a");
-      anchor.href = url;
-      anchor.download = "orcaboros.osc";
-      anchor.click();
-      URL.revokeObjectURL(url);
       setStatus(
-        "Downloaded the reviewed OSM Change file. Open it in JOSM for final review."
+        "Downloaded the JOSM OSM file. Open it in JOSM for final review."
       );
       setError(undefined);
     } catch (caught: unknown) {
-      setError(
+      const message =
         caught instanceof Error
           ? caught.message
-          : "The OSM Change export is invalid."
-      );
+          : "The OSM Change export is invalid.";
+      setExportError(message);
+      setStatus("OSM Change export failed.");
     }
   }
 
@@ -814,6 +909,16 @@ export function App(): ReactElement {
     nextProfile: MappingProfile
   ): Promise<void> {
     setProfile(nextProfile);
+    const remapStop = (stop: EligibleStop): EligibleStop =>
+      applyProfileStreetNameCleanup(nextProfile, stop);
+    const nextStops = stops.map(remapStop);
+    setStops(nextStops);
+    setFeedSummaries((currentSummaries) =>
+      currentSummaries.map((summary) => ({
+        ...summary,
+        eligibleStops: summary.eligibleStops.map(remapStop)
+      }))
+    );
     setNodes([]);
     setRetrievalComplete(false);
     setOsmRequestResult(undefined);
@@ -827,6 +932,10 @@ export function App(): ReactElement {
         await repository.putActiveSession({
           ...activeSession,
           profile: nextProfile,
+          sourceFeeds: activeSession.sourceFeeds.map((sourceFeed) => ({
+            ...sourceFeed,
+            eligibleStops: sourceFeed.eligibleStops.map(remapStop)
+          })),
           osmSnapshot: undefined,
           reviews: undefined,
           draft: undefined,
@@ -1072,8 +1181,8 @@ export function App(): ReactElement {
               <>
                 <p>
                   The endpoint is used only for this browser session and is not
-                  stored. Requests are node-only and bounded by the candidate
-                  radius.
+                  stored. Requests retrieve OSM nodes and tagged platform ways,
+                  bounded by the candidate radius.
                 </p>
                 <label>
                   HTTPS Overpass-compatible endpoint
@@ -1216,8 +1325,13 @@ export function App(): ReactElement {
                   onClick={() => void exportDraft()}
                   disabled={exportBlocked}
                 >
-                  Download OSM Change File
+                  Download JOSM OSM File
                 </button>
+                {exportError !== undefined && (
+                  <p className="error" role="alert">
+                    {exportError}
+                  </p>
+                )}
               </>
             )}
           </section>

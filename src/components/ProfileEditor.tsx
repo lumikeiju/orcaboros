@@ -177,6 +177,20 @@ export function ProfileEditor({
     });
   }
 
+  function updateStreetNameCleanup(
+    sourceFeedId: string,
+    streetNameCleanup: boolean
+  ): void {
+    onChange({
+      ...profile,
+      sourceFeeds: profile.sourceFeeds.map((sourceFeed) =>
+        sourceFeed.id === sourceFeedId
+          ? { ...sourceFeed, streetNameCleanup }
+          : sourceFeed
+      )
+    });
+  }
+
   function directFieldRuleIndex(
     sourceFeedId: string,
     field: string
@@ -423,6 +437,47 @@ export function ProfileEditor({
               <p className="workflow-step-hint">
                 GTFS moves a matched OSM element to the feed point. OSM keeps
                 the existing OSM location and applies the mapped GTFS tags.
+              </p>
+              <div className="profile-street-name-cleanup">
+                <span>Street name cleanup</span>
+                <button
+                  type="button"
+                  className={`profile-cleanup-toggle${
+                    sourceFeed.streetNameCleanup ? " is-on" : ""
+                  }`}
+                  role="switch"
+                  aria-checked={sourceFeed.streetNameCleanup}
+                  aria-label={`Street name cleanup for ${sourceFeed.id}`}
+                  onClick={() =>
+                    updateStreetNameCleanup(
+                      sourceFeed.id,
+                      !sourceFeed.streetNameCleanup
+                    )
+                  }
+                >
+                  <span
+                    className="profile-cleanup-toggle-option"
+                    aria-hidden="true"
+                  >
+                    Off
+                  </span>
+                  <span
+                    className="profile-cleanup-toggle-track"
+                    aria-hidden="true"
+                  >
+                    <span className="profile-cleanup-toggle-thumb" />
+                  </span>
+                  <span
+                    className="profile-cleanup-toggle-option"
+                    aria-hidden="true"
+                  >
+                    On
+                  </span>
+                </button>
+              </div>
+              <p className="workflow-step-hint">
+                Expand US street-name abbreviations and clean all-uppercase
+                names before mapping the OSM name tag.
               </p>
               <fieldset>
                 <legend>GTFS fields to OSM tags</legend>

@@ -4,20 +4,20 @@ import {
   buildOverpassRequests,
   buildOverpassRequest,
   escapeOverpassStringLiteral,
-  parseOverpassNodesForTest,
+  parseOverpassElementsForTest,
   validateOverpassEndpoint
 } from "../../src/infrastructure/osm";
 
 describe("bounded Overpass requests", () => {
-  it("constructs escaped node-only query clauses", () => {
+  it("constructs escaped node and platform-way query clauses", () => {
     const query = buildOverpassQuery(
       { south: 47.5, west: -122.4, north: 47.7, east: -122.2 },
       ["gtfs:stop_id:US-WA-KCM"]
     );
     expect(query).toContain("[out:json][timeout:60];");
     expect(query).toContain('node["gtfs:stop_id:US-WA-KCM"]');
-    expect(query).toContain("out meta;");
-    expect(query).not.toMatch(/^\s*way/mu);
+    expect(query).toContain('way["public_transport"="platform"]');
+    expect(query).toContain("out meta center;");
     expect(escapeOverpassStringLiteral('a"\\b')).toBe('a\\"\\\\b');
   });
 
@@ -38,19 +38,35 @@ describe("bounded Overpass requests", () => {
     const request = buildOverpassRequest("node(1);out meta;");
     expect(request.body).toContain("data=node%281%29%3Bout+meta%3B");
     expect(request.body).not.toContain("https");
+    expect(request.headers).toEqual({
+      "Content-Type": "application/x-www-form-urlencoded"
+    });
   });
 
-  it("parses nodes and ignores non-node elements", () => {
-    expect(
-      parseOverpassNodesForTest(
-        JSON.stringify({
-          elements: [
-            { type: "node", id: 1, version: 2, lat: 47, lon: -122 },
-            { type: "way", id: 2 }
-          ]
-        })
-      )
-    ).toHaveLength(1);
+  it("parses nodes and platform ways", () => {
+    const elements = parseOverpassElementsForTest(
+      JSON.stringify({
+        elements: [
+          { type: "node", id: 1, version: 2, lat: 47, lon: -122 },
+          {
+            type: "way",
+            id: 2,
+            version: 3,
+            center: { lat: 47.1, lon: -122.1 },
+            nodes: [10, 11],
+            tags: { public_transport: "platform" }
+          }
+        ]
+      })
+    );
+    expect(elements).toHaveLength(2);
+    expect(elements[1]).toMatchObject({
+      type: "way",
+      id: 2,
+      latitude: 47.1,
+      longitude: -122.1,
+      nodeRefs: [10, 11]
+    });
   });
 
   it("rejects malformed bounds and unverified identity keys before a request", () => {

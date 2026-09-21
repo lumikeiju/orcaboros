@@ -3,7 +3,7 @@ import { type ReactElement } from "react";
 export type OsmRequestResultState =
   | {
       kind: "success";
-      nodeCount: number;
+      elementCount: number;
       requestCount: number;
     }
   | {
@@ -35,13 +35,13 @@ export function OsmRequestResult({
   switch (result.kind) {
     case "success":
       heading = "Overpass request complete";
-      detail = `Retrieved ${result.nodeCount.toLocaleString()} OSM candidate node${
-        result.nodeCount === 1 ? "" : "s"
+      detail = `Retrieved ${result.elementCount.toLocaleString()} OSM candidate element${
+        result.elementCount === 1 ? "" : "s"
       } from ${requestCountLabel(result.requestCount)}.`;
       break;
     case "empty":
       heading = "Overpass request complete";
-      detail = `No OSM candidate nodes were returned after ${requestCountLabel(
+      detail = `No OSM candidate elements were returned after ${requestCountLabel(
         result.requestCount
       )}.`;
       break;

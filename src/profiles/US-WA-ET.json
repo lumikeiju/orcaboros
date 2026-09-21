@@ -9,6 +9,7 @@
       "displayName": "Everett Transit",
       "enabled": true,
       "geometryTarget": "osm",
+      "streetNameCleanup": true,
       "additionalTags": [
         {
           "key": "public_transport",
@@ -30,8 +31,13 @@
       "appliesTo": { "sourceFeedIds": ["US-WA-ET"] }
     },
     {
+      "key": "ref",
+      "value": { "kind": "field", "field": "stop_code" },
+      "appliesTo": { "sourceFeedIds": ["US-WA-ET"] }
+    },
+    {
       "key": "name",
-      "value": { "kind": "field", "field": "stop_name" }
+      "value": { "kind": "field", "field": "stop_name_expanded" }
     }
   ],
   "candidateRadiusMeters": 50,

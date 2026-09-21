@@ -1,9 +1,13 @@
-import { FeedImportResult } from "../domain/gtfs";
+import type { FeedImportResult } from "../domain/gtfs";
 import { SourceFeedDefinition } from "../domain/source-feed";
 
 export type WorkerErrorPayload = {
   code: string;
   message: string;
+};
+
+export type GtfsWorkerImportResult = Omit<FeedImportResult, "validStopIds"> & {
+  validStopIds: readonly string[];
 };
 
 export type GtfsWorkerImportRequest = {
@@ -35,7 +39,7 @@ export type GtfsWorkerMessage =
       requestId: string;
       sourceFeedId: string;
       archiveFingerprint: string;
-      result: FeedImportResult;
+      result: GtfsWorkerImportResult;
     }
   | {
       type: "error";

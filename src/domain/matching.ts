@@ -1,6 +1,6 @@
 import { EligibleStop } from "./gtfs";
 import { haversineDistanceMeters } from "./geo";
-import { OsmNode } from "./osm";
+import { OsmElement, OsmElementRef } from "./osm";
 import { identityTagKey } from "./source-feed";
 import { normalizeName } from "./street-name";
 
@@ -10,7 +10,7 @@ export type MatchEvidence =
   | { kind: "distance"; meters: number };
 
 export type CandidateMatch = {
-  node: OsmNode;
+  node: OsmElement;
   distanceMeters: number;
   evidence: readonly MatchEvidence[];
   exactIdentity: boolean;
@@ -23,11 +23,11 @@ export type InitialMatch =
   | { kind: "no-candidates"; candidates: readonly [] };
 
 export class NodeSpatialIndex {
-  private readonly buckets = new Map<string, OsmNode[]>();
+  private readonly buckets = new Map<string, OsmElement[]>();
   private readonly cellDegrees: number;
   private readonly longitudeCells: number;
 
-  constructor(nodes: readonly OsmNode[], expectedRadiusMeters = 50) {
+  constructor(nodes: readonly OsmElement[], expectedRadiusMeters = 50) {
     if (!Number.isFinite(expectedRadiusMeters) || expectedRadiusMeters <= 0) {
       throw new Error("Spatial index radius must be positive");
     }
@@ -45,7 +45,7 @@ export class NodeSpatialIndex {
     latitude: number,
     longitude: number,
     radiusMeters: number
-  ): readonly OsmNode[] {
+  ): readonly OsmElement[] {
     const latitudePadding = radiusMeters / 111_320;
     const longitudePadding =
       radiusMeters /
@@ -56,7 +56,7 @@ export class NodeSpatialIndex {
     const longitudePaddingCells = Math.ceil(
       longitudePadding / this.cellDegrees
     );
-    const nodes: OsmNode[] = [];
+    const nodes: OsmElement[] = [];
     for (let latCell = minLatitude; latCell <= maxLatitude; latCell += 1) {
       for (
         let offset = -longitudePaddingCells;
@@ -91,7 +91,7 @@ export class NodeSpatialIndex {
 
 export function rankCandidates(
   stop: EligibleStop,
-  nodes: readonly OsmNode[],
+  nodes: readonly OsmElement[],
   candidateRadiusMeters: number,
   spatialIndex = new NodeSpatialIndex(nodes, candidateRadiusMeters)
 ): readonly CandidateMatch[] {
@@ -150,7 +150,7 @@ export function rankCandidates(
 
 export function determineInitialMatch(
   stop: EligibleStop,
-  nodes: readonly OsmNode[],
+  nodes: readonly OsmElement[],
   candidateRadiusMeters: number,
   autoIdRadiusMeters: number,
   spatialIndex?: NodeSpatialIndex
@@ -193,30 +193,43 @@ export function canShareSelectedNode(
 export function validateSelectedClaims(
   assignments: readonly {
     feature: Pick<EligibleStop, "sourceFeedId" | "stopId">;
-    nodeId: number;
+    elementRef?: OsmElementRef;
+    nodeId?: number;
   }[]
 ): readonly string[] {
   const issues: string[] = [];
-  const sourceClaims = new Map<string, number>();
-  const nodeSources = new Map<number, Set<string>>();
+  const sourceClaims = new Map<string, Map<string, string>>();
+  const nodeSources = new Map<string, Set<string>>();
   for (const assignment of assignments) {
-    const existingNode = sourceClaims.get(assignment.feature.sourceFeedId);
-    if (existingNode !== undefined && existingNode !== assignment.nodeId) {
+    const claimsForSource =
+      sourceClaims.get(assignment.feature.sourceFeedId) ?? new Map();
+    const existingNode = claimsForSource.get(assignment.feature.stopId);
+    const elementRef =
+      assignment.elementRef ??
+      (assignment.nodeId === undefined
+        ? undefined
+        : { type: "node" as const, id: assignment.nodeId });
+    if (elementRef === undefined) {
+      throw new Error("A selected OSM element is required");
+    }
+    const elementId = `${elementRef.type}:${elementRef.id}`;
+    const elementLabel = elementRef.type === "way" ? "way" : "node";
+    if (existingNode !== undefined && existingNode !== elementId) {
       issues.push(
-        `Source feed ${assignment.feature.sourceFeedId} is claimed by multiple OSM nodes`
+        `Stop ${assignment.feature.sourceFeedId}/${assignment.feature.stopId} is claimed by multiple OSM ${elementLabel}s`
       );
     }
-    sourceClaims.set(assignment.feature.sourceFeedId, assignment.nodeId);
+    claimsForSource.set(assignment.feature.stopId, elementId);
+    sourceClaims.set(assignment.feature.sourceFeedId, claimsForSource);
 
-    const sourcesForNode =
-      nodeSources.get(assignment.nodeId) ?? new Set<string>();
+    const sourcesForNode = nodeSources.get(elementId) ?? new Set<string>();
     if (sourcesForNode.has(assignment.feature.sourceFeedId)) {
       issues.push(
-        `OSM node ${assignment.nodeId} cannot merge two features from ${assignment.feature.sourceFeedId}`
+        `OSM ${elementLabel} ${elementRef.id} cannot merge two features from ${assignment.feature.sourceFeedId}`
       );
     }
     sourcesForNode.add(assignment.feature.sourceFeedId);
-    nodeSources.set(assignment.nodeId, sourcesForNode);
+    nodeSources.set(elementId, sourcesForNode);
   }
   return issues;
 }

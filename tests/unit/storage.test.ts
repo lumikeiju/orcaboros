@@ -36,7 +36,8 @@ const session: StagedSession = {
         id: "US-WA-KCM",
         displayName: "KCM",
         enabled: true,
-        geometryTarget: "osm"
+        geometryTarget: "osm",
+        streetNameCleanup: true
       }
     ],
     mappingRules: [],

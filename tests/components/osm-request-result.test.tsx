@@ -12,12 +12,12 @@ describe("OsmRequestResult", () => {
     {
       result: {
         kind: "success",
-        nodeCount: 12,
+        elementCount: 12,
         requestCount: 2
       },
       role: "status",
       heading: "Overpass request complete",
-      detail: "Retrieved 12 OSM candidate nodes from 2 Overpass requests."
+      detail: "Retrieved 12 OSM candidate elements from 2 Overpass requests."
     },
     {
       result: {
@@ -26,7 +26,8 @@ describe("OsmRequestResult", () => {
       },
       role: "status",
       heading: "Overpass request complete",
-      detail: "No OSM candidate nodes were returned after 1 Overpass request."
+      detail:
+        "No OSM candidate elements were returned after 1 Overpass request."
     },
     {
       result: {

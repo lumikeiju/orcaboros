@@ -1,5 +1,5 @@
-import { identityTag } from "./source-feed";
-import { expandStreetName } from "./street-name";
+import { DEFAULT_STREET_NAME_CLEANUP, identityTag } from "./source-feed";
+import { cleanupStreetName } from "./street-name";
 
 export type LocationKind = "platform" | "station";
 
@@ -97,11 +97,24 @@ export function toFiniteCoordinate(
     : undefined;
 }
 
+export function applyStreetNameCleanup(
+  stop: EligibleStop,
+  streetNameCleanup = DEFAULT_STREET_NAME_CLEANUP
+): EligibleStop {
+  const stopNameExpanded = streetNameCleanup
+    ? cleanupStreetName(stop.stopName)
+    : stop.stopName;
+  return stopNameExpanded === stop.stopNameExpanded
+    ? stop
+    : { ...stop, stopNameExpanded };
+}
+
 export function createEligibleStop(
   sourceFeedId: string,
   sourceFeedName: string,
   row: GtfsStopRow,
-  sourceFeedMetadata: Readonly<Record<string, string>> = {}
+  sourceFeedMetadata: Readonly<Record<string, string>> = {},
+  streetNameCleanup = DEFAULT_STREET_NAME_CLEANUP
 ): { stop: EligibleStop } | { diagnostic: StopDiagnostic } {
   const stopId = row.fields.stop_id?.trim() ?? "";
   if (!isValidStopId(stopId)) {
@@ -181,7 +194,9 @@ export function createEligibleStop(
       sourceFeedName,
       stopId,
       stopName,
-      stopNameExpanded: expandStreetName(stopName),
+      stopNameExpanded: streetNameCleanup
+        ? cleanupStreetName(stopName)
+        : stopName,
       latitude,
       longitude,
       locationKind,

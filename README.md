@@ -1,6 +1,6 @@
 # Orcaboros
 
-Orcaboros is a private, browser-first tool for reviewing conflation between local Puget Sound GTFS stop feeds and OpenStreetMap nodes. It imports only selected local `stops.txt` files, keeps operational endpoints in memory, and downloads a deterministic OSM Change file for manual review in JOSM.
+Orcaboros is a private, browser-first tool for reviewing conflation between local Puget Sound GTFS stop feeds and OpenStreetMap nodes and tagged platform ways. It imports only selected local `stops.txt` files, keeps operational endpoints in memory, and downloads a deterministic OSM Change file for manual review in JOSM.
 
 ## Status
 
@@ -26,7 +26,9 @@ The candidate map starts on the shared world globe view (longitude 0, latitude 0
 
 ## Configuration and privacy
 
-Known feed IDs select their stock mapping profile automatically from the profile dictionary. After import, the profile editor lists every `stops.txt` field and lets the mapper assign an OSM tag key; conditional and constant rules remain available for profile-specific behavior. Overpass-compatible endpoints are entered per browser session in an obscured field and are never persisted in IndexedDB, profiles, routes, logs, or exports. The application does not make an Overpass request until the mapper explicitly starts retrieval. This repository contains no production GTFS archive or OSM response.
+Known feed IDs select their stock mapping profile automatically from the profile dictionary. After import, the profile editor lists every `stops.txt` field and lets the mapper assign an OSM tag key; conditional and constant rules remain available for profile-specific behavior. Overpass-compatible endpoints are entered per browser session in an obscured field and are never persisted in IndexedDB, profiles, routes, logs, or exports. Browser requests use only CORS-safelisted headers and an explicit strict-origin referrer policy, so the browser supplies its normal `User-Agent` and referring origin without a preflight. Browser JavaScript cannot set the required application-specific `User-Agent`; providers that enforce that requirement need a server-side request path and are not compatible with this browser-only release. The application does not make an Overpass request until the mapper explicitly starts retrieval. This repository contains no production GTFS archive or OSM response.
+
+The export downloads a JOSM-compatible `.osm` file. Its `<changeset>` section includes the Orcaboros website and the generated GTFS public-transport edit comment; JOSM does not read that metadata from the proposed `<changeset>` section in standard `.osc` files.
 
 See [`docs/architecture.md`](docs/architecture.md) for the data boundaries and [`docs/mapping-profiles.md`](docs/mapping-profiles.md) for the profile format. The accepted architecture decision is recorded in [`docs/adr/0001-browser-first-worker-based-node-conflation.md`](docs/adr/0001-browser-first-worker-based-node-conflation.md).
 

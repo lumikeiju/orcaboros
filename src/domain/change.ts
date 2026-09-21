@@ -1,5 +1,5 @@
 import { EligibleStop } from "./gtfs";
-import { OsmNode, OsmTag, OsmTagSet } from "./osm";
+import { OsmElement, OsmTag, OsmTagSet } from "./osm";
 import { FeatureReviewState } from "./review";
 import type { GeometryTarget } from "./source-feed";
 
@@ -12,7 +12,7 @@ export type DraftCreate = {
 };
 
 export type DraftModify = {
-  node: OsmNode;
+  node: OsmElement;
   coordinates: { latitude: number; longitude: number };
   featureIds: readonly string[];
   requiredIdentityTags: readonly OsmTag[];
@@ -29,9 +29,9 @@ export type ChangeDraft = {
 export function coordinatesForGeometryTarget(
   geometryTarget: GeometryTarget,
   feature: Pick<EligibleStop, "latitude" | "longitude">,
-  node: Pick<OsmNode, "latitude" | "longitude">
+  node: Pick<OsmElement, "latitude" | "longitude"> & { type?: "node" | "way" }
 ): { latitude: number; longitude: number } {
-  return geometryTarget === "gtfs"
+  return geometryTarget === "gtfs" && node.type !== "way"
     ? { latitude: feature.latitude, longitude: feature.longitude }
     : { latitude: node.latitude, longitude: node.longitude };
 }

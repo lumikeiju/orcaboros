@@ -4,7 +4,7 @@ import {
   InitialMatch,
   NodeSpatialIndex
 } from "../../domain/matching";
-import { OsmNode } from "../../domain/osm";
+import { OsmElement } from "../../domain/osm";
 
 export type MatchingProgress = {
   processed: number;
@@ -13,7 +13,7 @@ export type MatchingProgress = {
 
 export function matchStops(
   stops: readonly EligibleStop[],
-  nodes: readonly OsmNode[],
+  nodes: readonly OsmElement[],
   candidateRadiusMeters: number,
   autoIdRadiusMeters: number,
   onProgress?: (progress: MatchingProgress) => void

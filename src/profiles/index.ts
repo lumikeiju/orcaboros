@@ -14,6 +14,7 @@ import {
 } from "../domain/profile";
 import {
   CONSOLIDATED_SOURCE_FEED_ID,
+  DEFAULT_STREET_NAME_CLEANUP,
   identityTagKey,
   isValidSourceFeedId,
   normalizeSourceFeedId
@@ -129,6 +130,7 @@ export function createCustomProfileForFeedIds(
       displayName: sourceFeedId,
       enabled: true,
       geometryTarget: "osm",
+      streetNameCleanup: DEFAULT_STREET_NAME_CLEANUP,
       additionalTags: []
     })),
     mappingRules: normalizedIds.map((sourceFeedId) => ({

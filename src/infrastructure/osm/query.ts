@@ -12,14 +12,10 @@ export const OVERPASS_CLIENT_TIMEOUT_MS = 75_000;
 export const OVERPASS_MAX_RESPONSE_BYTES = 25 * 1024 * 1024;
 export const OVERPASS_MAX_ELEMENTS = 50_000;
 
-const CANDIDATE_TAG_CLAUSES: readonly [string, string][] = [
-  ["public_transport", "platform"],
-  ["public_transport", "station"],
-  ["highway", "bus_stop"],
-  ["railway", "station"],
-  ["railway", "halt"],
-  ["railway", "tram_stop"],
-  ["amenity", "ferry_terminal"]
+const CANDIDATE_TAG_CLAUSES: readonly ["node" | "way", string, string][] = [
+  ["node", "highway", "bus_stop"],
+  ["node", "public_transport", "platform"],
+  ["way", "public_transport", "platform"]
 ];
 
 export type QueryExtent = {
@@ -105,8 +101,8 @@ function formatBounds(bounds: BoundingBox): string {
 function candidateClauses(bounds: BoundingBox): string[] {
   const extent = formatBounds(bounds);
   return CANDIDATE_TAG_CLAUSES.map(
-    ([key, value]) =>
-      `  node["${escapeOverpassStringLiteral(key)}"="${escapeOverpassStringLiteral(value)}"](${extent});`
+    ([elementType, key, value]) =>
+      `  ${elementType}["${escapeOverpassStringLiteral(key)}"="${escapeOverpassStringLiteral(value)}"](${extent});`
   );
 }
 
@@ -156,7 +152,7 @@ export function buildOverpassQuery(
     "(",
     ...clauses,
     ");",
-    "out meta;"
+    "out meta center;"
   ].join("\n");
 }
 

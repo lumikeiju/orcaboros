@@ -1,6 +1,16 @@
 import { EligibleStop } from "./gtfs";
-import { OsmNode, OsmTagSet, recordToTagArray, tagArrayToRecord } from "./osm";
+import {
+  OsmElement,
+  OsmElementRef,
+  OsmTagSet,
+  elementKey,
+  isOsmWay,
+  osmElementRef,
+  recordToTagArray,
+  tagArrayToRecord
+} from "./osm";
 import { identityTagKey } from "./source-feed";
+import { normalizeName } from "./street-name";
 
 export type FeatureReviewState =
   | "unreviewed"
@@ -24,17 +34,20 @@ export type FeatureReview = {
   featureId: string;
   state: FeatureReviewState;
   selectedNodeId: number | undefined;
+  selectedElement?: OsmElementRef;
   createCoordinates: { latitude: number; longitude: number } | undefined;
   proposals: readonly TagProposal[];
 };
 
 export type ReviewAction =
   | { type: "select-match"; nodeId: number }
+  | { type: "select-element"; element: OsmElementRef }
   | { type: "select-create"; latitude: number; longitude: number }
   | { type: "skip" }
   | { type: "set-tag-resolution"; key: string; resolution: TagResolution };
 
-export function defaultTagResolution(
+function defaultTagResolutionForKey(
+  key: string,
   currentValue: string | undefined,
   proposedValue: string | undefined
 ): TagResolution {
@@ -44,13 +57,27 @@ export function defaultTagResolution(
   if (currentValue === undefined) {
     return "accept-proposed";
   }
+  if (
+    key === "name" &&
+    normalizeName(currentValue) === normalizeName(proposedValue)
+  ) {
+    return "accept-proposed";
+  }
   return currentValue === proposedValue ? "keep-current" : "keep-current";
 }
 
+export function defaultTagResolution(
+  currentValue: string | undefined,
+  proposedValue: string | undefined
+): TagResolution {
+  return defaultTagResolutionForKey("", currentValue, proposedValue);
+}
+
 export function buildTagProposals(
-  node: OsmNode | undefined,
+  node: OsmElement | undefined,
   proposedTags: OsmTagSet,
-  staleKeys: readonly string[] = []
+  staleKeys: readonly string[] = [],
+  removeKeys: readonly string[] = []
 ): readonly TagProposal[] {
   const current = node?.tags ?? {};
   const keys = new Set([
@@ -64,7 +91,9 @@ export function buildTagProposals(
       const proposedValue = proposedTags[key];
       const currentValue = current[key];
       const stale = staleKeys.includes(key) && proposedValue === undefined;
-      const defaultResolution = defaultTagResolution(
+      const remove = removeKeys.includes(key) && proposedValue === undefined;
+      const defaultResolution = defaultTagResolutionForKey(
+        key,
         currentValue,
         proposedValue
       );
@@ -72,11 +101,47 @@ export function buildTagProposals(
         key,
         proposedValue,
         currentValue,
-        defaultResolution: stale ? "keep-current" : defaultResolution,
-        resolution: stale ? "keep-current" : defaultResolution,
+        defaultResolution: remove
+          ? "remove"
+          : stale
+            ? "keep-current"
+            : defaultResolution,
+        resolution: remove
+          ? "remove"
+          : stale
+            ? "keep-current"
+            : defaultResolution,
         stale
       };
     });
+}
+
+export function refreshTagProposals(
+  previous: readonly TagProposal[],
+  node: OsmElement | undefined,
+  proposedTags: OsmTagSet,
+  staleKeys: readonly string[] = [],
+  removeKeys: readonly string[] = [],
+  forceAcceptKeys: readonly string[] = []
+): readonly TagProposal[] {
+  const previousByKey = new Map(
+    previous.map((proposal) => [proposal.key, proposal])
+  );
+  return buildTagProposals(node, proposedTags, staleKeys, removeKeys).map(
+    (proposal) => {
+      if (
+        forceAcceptKeys.includes(proposal.key) &&
+        proposal.proposedValue !== undefined
+      ) {
+        return { ...proposal, resolution: "accept-proposed" };
+      }
+      const prior = previousByKey.get(proposal.key);
+      if (prior === undefined || prior.resolution === prior.defaultResolution) {
+        return proposal;
+      }
+      return { ...proposal, resolution: prior.resolution };
+    }
+  );
 }
 
 export function applyReviewAction(
@@ -84,11 +149,22 @@ export function applyReviewAction(
   action: ReviewAction
 ): FeatureReview {
   switch (action.type) {
-    case "select-match":
+    case "select-match": {
       return {
         ...review,
         state: "match-selected",
         selectedNodeId: action.nodeId,
+        selectedElement: { type: "node", id: action.nodeId },
+        createCoordinates: undefined
+      };
+    }
+    case "select-element":
+      return {
+        ...review,
+        state: "match-selected",
+        selectedNodeId:
+          action.element.type === "node" ? action.element.id : undefined,
+        selectedElement: action.element,
         createCoordinates: undefined
       };
     case "select-create":
@@ -96,6 +172,7 @@ export function applyReviewAction(
         ...review,
         state: "create-selected",
         selectedNodeId: undefined,
+        selectedElement: undefined,
         createCoordinates: {
           latitude: action.latitude,
           longitude: action.longitude
@@ -106,6 +183,7 @@ export function applyReviewAction(
         ...review,
         state: "skipped",
         selectedNodeId: undefined,
+        selectedElement: undefined,
         createCoordinates: undefined
       };
     case "set-tag-resolution":
@@ -145,8 +223,17 @@ export function computePostChangeTags(
   return result;
 }
 
+export function removeTags(
+  tags: OsmTagSet,
+  keys: readonly string[]
+): OsmTagSet {
+  const result: Record<string, string> = { ...tags };
+  keys.forEach((key) => delete result[key]);
+  return result;
+}
+
 export function staleIdentityKeys(
-  node: OsmNode,
+  node: OsmElement,
   selectedSourceFeedIds: readonly string[],
   validStopIds: ReadonlyMap<string, ReadonlySet<string>>
 ): readonly string[] {
@@ -161,17 +248,47 @@ export function staleIdentityKeys(
   });
 }
 
+export function legacyIdentityKeys(
+  node: OsmElement,
+  stop: Pick<EligibleStop, "stopId" | "identityTag">
+): readonly string[] {
+  const legacyValue = node.tags["gtfs:stop_id"];
+  const sourceIdentityValue = node.tags[stop.identityTag.key];
+  return legacyValue === stop.stopId &&
+    (sourceIdentityValue === undefined || sourceIdentityValue === stop.stopId)
+    ? ["gtfs:stop_id"]
+    : [];
+}
+
 export type DraftFeatureValidation = {
   featureId: string;
   state: FeatureReviewState;
   requiredIdentityKey: string;
   requiredIdentityValue: string;
   selectedNodeId: number | undefined;
+  selectedElement?: OsmElementRef;
 };
+
+export function selectedElementRef(
+  review: Pick<FeatureReview, "selectedNodeId" | "selectedElement">
+): OsmElementRef | undefined {
+  return (
+    review.selectedElement ??
+    (review.selectedNodeId === undefined
+      ? undefined
+      : { type: "node", id: review.selectedNodeId })
+  );
+}
+
+function selectedRef(
+  review: Pick<DraftFeatureValidation, "selectedNodeId" | "selectedElement">
+): OsmElementRef | undefined {
+  return selectedElementRef(review);
+}
 
 export function validateReviewCompletion(
   reviews: readonly DraftFeatureValidation[],
-  postChangeTagsByNode: ReadonlyMap<number, OsmTagSet>
+  postChangeTagsByNode: ReadonlyMap<number | string, OsmTagSet>
 ): readonly string[] {
   const issues: string[] = [];
   for (const review of reviews) {
@@ -180,11 +297,16 @@ export function validateReviewCompletion(
       continue;
     }
     if (review.state === "match-selected" || review.state === "auto-matched") {
-      if (review.selectedNodeId === undefined) {
-        issues.push(`${review.featureId} has no selected OSM node`);
+      const selected = selectedRef(review);
+      if (selected === undefined) {
+        issues.push(`${review.featureId} has no selected OSM element`);
         continue;
       }
-      const tags = postChangeTagsByNode.get(review.selectedNodeId);
+      const tags =
+        postChangeTagsByNode.get(elementKey(selected)) ??
+        (selected.type === "node"
+          ? postChangeTagsByNode.get(selected.id)
+          : undefined);
       if (
         tags === undefined ||
         tags[review.requiredIdentityKey] !== review.requiredIdentityValue
@@ -194,7 +316,7 @@ export function validateReviewCompletion(
     }
     if (
       review.state === "create-selected" &&
-      review.selectedNodeId !== undefined
+      selectedRef(review) !== undefined
     ) {
       issues.push(`${review.featureId} has contradictory create selection`);
     }
@@ -232,7 +354,7 @@ export function firstUndecidedFeatureId({
   validStopIds
 }: {
   stops: readonly EligibleStop[];
-  nodes: readonly OsmNode[];
+  nodes: readonly OsmElement[];
   reviews: ReadonlyMap<string, FeatureReview>;
   validStopIds: ReadonlyMap<string, ReadonlySet<string>>;
 }): string | undefined {
@@ -259,7 +381,13 @@ export function firstUndecidedFeatureId({
       );
     })
   );
-  return removedNode === undefined ? undefined : `removed-${removedNode.id}`;
+  return removedNode === undefined
+    ? undefined
+    : `removed-${
+        isOsmWay(removedNode)
+          ? elementKey(osmElementRef(removedNode))
+          : removedNode.id
+      }`;
 }
 
 /**
@@ -277,7 +405,7 @@ export function computeConflationProgress({
   validStopIds
 }: {
   stops: readonly EligibleStop[];
-  nodes: readonly OsmNode[];
+  nodes: readonly OsmElement[];
   reviews: ReadonlyMap<string, FeatureReview>;
   validStopIds: ReadonlyMap<string, ReadonlySet<string>>;
 }): ConflationProgress {

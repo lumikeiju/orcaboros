@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  applyStreetNameCleanup,
   createEligibleStop,
   locationKindForValue
 } from "../../src/domain/gtfs";
@@ -8,6 +9,8 @@ import {
   ProfileValidationError,
   validateMappingProfile
 } from "../../src/domain/profile";
+import { getProfileForFeedId } from "../../src/profiles";
+import { mapStopToOsmTags } from "../../src/infrastructure/gtfs";
 
 describe("GTFS stop eligibility", () => {
   const fields = {
@@ -35,6 +38,67 @@ describe("GTFS stop eligibility", () => {
         value: "KCM-1"
       });
     }
+  });
+
+  it("maps the stock Everett profile to a scoped identity and cleaned name", () => {
+    const profile = getProfileForFeedId("US-WA-ET");
+    if (profile === undefined) {
+      throw new Error("stock Everett profile is missing");
+    }
+    const result = createEligibleStop("US-WA-ET", "Everett Transit", {
+      rowNumber: 2,
+      fields: {
+        stop_id: "64",
+        stop_name: "Merrill Creek Pkwy & Glenwood Ave - Westbound",
+        stop_lat: "47.9",
+        stop_lon: "-122.2",
+        location_type: "0"
+      }
+    });
+    if (!("stop" in result)) {
+      throw new Error("Everett fixture stop is invalid");
+    }
+
+    expect(mapStopToOsmTags(profile, result.stop)).toMatchObject({
+      "gtfs:stop_id:US-WA-ET": "64",
+      name: "Merrill Creek Parkway & Glenwood Avenue - Westbound"
+    });
+  });
+
+  it("can disable street-name cleanup without changing the raw stop name", () => {
+    const result = createEligibleStop(
+      "US-WA-KCM",
+      "King County Metro",
+      {
+        rowNumber: 2,
+        fields
+      },
+      {},
+      false
+    );
+    expect("stop" in result).toBe(true);
+    if ("stop" in result) {
+      expect(result.stop.stopName).toBe("3rd Ave & Pine St");
+      expect(result.stop.stopNameExpanded).toBe("3rd Ave & Pine St");
+    }
+  });
+
+  it("recomputes the expanded name when a profile setting changes", () => {
+    const result = createEligibleStop("US-WA-KCM", "King County Metro", {
+      rowNumber: 2,
+      fields
+    });
+    if (!("stop" in result)) {
+      throw new Error("fixture stop is invalid");
+    }
+
+    expect(applyStreetNameCleanup(result.stop, false).stopNameExpanded).toBe(
+      "3rd Ave & Pine St"
+    );
+    expect(
+      applyStreetNameCleanup(applyStreetNameCleanup(result.stop, false), true)
+        .stopNameExpanded
+    ).toBe("3rd Avenue & Pine Street");
   });
 
   it("accepts stations but excludes entrances and invalid coordinates", () => {

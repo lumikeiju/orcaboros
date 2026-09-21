@@ -14,6 +14,13 @@ export type ImportProgressCallback = (
   totalBytes?: number
 ) => void;
 
+function workerErrorMessage(event: ErrorEvent): string {
+  const detail = event.message.trim();
+  return detail.length > 0
+    ? `The GTFS import worker stopped unexpectedly: ${detail}`
+    : "The GTFS import worker stopped unexpectedly";
+}
+
 export function startArchiveImport(
   archive: File,
   definitions: readonly SourceFeedDefinition[],
@@ -29,6 +36,14 @@ export function startArchiveImport(
   let rejectPromise: ((reason?: unknown) => void) | undefined;
   const promise = new Promise<ImportedArchive>((resolve, reject) => {
     rejectPromise = reject;
+    const fail = (error: Error): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      worker.terminate();
+      reject(error);
+    };
     worker.onmessage = (event: MessageEvent<GtfsWorkerMessage>) => {
       const message = event.data;
       if (message.requestId !== requestId) {
@@ -49,24 +64,36 @@ export function startArchiveImport(
         resolve({
           sourceFeedId: message.sourceFeedId,
           archiveFingerprint: message.archiveFingerprint,
-          result: message.result
+          result: {
+            ...message.result,
+            validStopIds: new Set(message.result.validStopIds)
+          }
         });
       } else {
         reject(new Error(message.error.message));
       }
     };
-    worker.onerror = () => {
-      settled = true;
-      worker.terminate();
-      reject(new Error("The GTFS import worker stopped unexpectedly"));
+    worker.onerror = (event) => {
+      fail(new Error(workerErrorMessage(event)));
     };
-    worker.postMessage({
-      type: "import",
-      requestId,
-      archive,
-      sourceFeedId,
-      definitions
-    });
+    worker.onmessageerror = () => {
+      fail(new Error("The GTFS import worker returned an unreadable result"));
+    };
+    try {
+      worker.postMessage({
+        type: "import",
+        requestId,
+        archive,
+        sourceFeedId,
+        definitions
+      });
+    } catch (error: unknown) {
+      fail(
+        error instanceof Error
+          ? error
+          : new Error("The GTFS import could not be started")
+      );
+    }
   });
   return {
     promise,

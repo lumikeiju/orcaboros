@@ -2,6 +2,7 @@ import { EligibleStop, LocationKind } from "./gtfs";
 import { isValidOsmKey, isValidOsmValue, OsmTag } from "./osm";
 import {
   CONSOLIDATED_SOURCE_FEED_ID,
+  DEFAULT_STREET_NAME_CLEANUP,
   DEFAULT_GEOMETRY_TARGET,
   isValidSourceFeedId,
   SourceFeedDefinition,
@@ -39,6 +40,7 @@ export type MappingRule = {
 };
 
 export type ProfileSourceFeed = SourceFeedDefinition & {
+  streetNameCleanup: boolean;
   additionalTags?: readonly MappingRule[];
 };
 
@@ -199,6 +201,16 @@ export function validateMappingProfile(
           message: "must be gtfs or osm"
         });
       }
+      const streetNameCleanup =
+        item.streetNameCleanup === undefined
+          ? DEFAULT_STREET_NAME_CLEANUP
+          : item.streetNameCleanup;
+      if (typeof streetNameCleanup !== "boolean") {
+        issues.push({
+          path: `${path}.streetNameCleanup`,
+          message: "must be a boolean"
+        });
+      }
       let metadata: Record<string, string> | undefined;
       if (item.metadata !== undefined) {
         if (!isRecord(item.metadata)) {
@@ -237,6 +249,10 @@ export function validateMappingProfile(
           geometryTarget === "gtfs" || geometryTarget === "osm"
             ? geometryTarget
             : DEFAULT_GEOMETRY_TARGET,
+        streetNameCleanup:
+          typeof streetNameCleanup === "boolean"
+            ? streetNameCleanup
+            : DEFAULT_STREET_NAME_CLEANUP,
         metadata,
         additionalTags: []
       });

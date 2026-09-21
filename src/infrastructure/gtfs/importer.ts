@@ -199,7 +199,8 @@ export async function importGtfsArchive(
         sourceFeedId,
         definition.displayName,
         parsed,
-        definition.metadata
+        definition.metadata,
+        definition.streetNameCleanup
       );
       if ("diagnostic" in result) {
         skippedRows += 1;
