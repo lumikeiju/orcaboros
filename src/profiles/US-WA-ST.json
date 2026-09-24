@@ -26,11 +26,6 @@
   ],
   "mappingRules": [
     {
-      "key": "gtfs:stop_id:US-WA-ST",
-      "value": { "kind": "field", "field": "stop_id" },
-      "appliesTo": { "sourceFeedIds": ["US-WA-ST"] }
-    },
-    {
       "key": "name",
       "value": { "kind": "field", "field": "stop_name_expanded" }
     }

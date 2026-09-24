@@ -36,10 +36,7 @@ describe("deterministic OSM Change export", () => {
           state: "create-selected",
           latitude: stop.latitude,
           longitude: stop.longitude,
-          tags: {
-            name: 'A & "B"',
-            "gtfs:stop_id:US-WA-KCM": stop.stopId
-          }
+          tags: { name: 'A & "B"' }
         }
       ],
       modifications: []
@@ -51,7 +48,6 @@ describe("deterministic OSM Change export", () => {
         '<osmChange version="0.6" generator="orcaboros">',
         "<create>",
         '  <node id="-1" lat="47.1234568" lon="-122.1234568">',
-        '    <tag k="gtfs:stop_id:US-WA-KCM" v="2"/>',
         '    <tag k="name" v="A &amp; &quot;B&quot;"/>',
         "  </node>",
         "</create>",
@@ -92,11 +88,7 @@ describe("deterministic OSM Change export", () => {
             longitude: -122.123456789
           },
           featureIds: [stop.featureId],
-          requiredIdentityTags: [stop.identityTag],
-          tags: {
-            name: "New",
-            "gtfs:stop_id:US-WA-KCM": "3"
-          }
+          tags: { name: "New" }
         }
       ]
     };
@@ -121,9 +113,7 @@ describe("deterministic OSM Change export", () => {
           state: "create-selected",
           latitude: stop.latitude,
           longitude: stop.longitude,
-          tags: {
-            "gtfs:stop_id:US-WA-KCM": stop.stopId
-          }
+          tags: {}
         }
       ],
       modifications: [
@@ -140,8 +130,7 @@ describe("deterministic OSM Change export", () => {
             longitude: -122.123456789
           },
           featureIds: [stop.featureId],
-          requiredIdentityTags: [stop.identityTag],
-          tags: { "gtfs:stop_id:US-WA-KCM": stop.stopId }
+          tags: {}
         }
       ]
     };
@@ -183,11 +172,7 @@ describe("deterministic OSM Change export", () => {
           node: way,
           coordinates: { latitude: way.latitude, longitude: way.longitude },
           featureIds: [stop.featureId],
-          requiredIdentityTags: [stop.identityTag],
-          tags: {
-            public_transport: "platform",
-            "gtfs:stop_id:US-WA-KCM": stop.stopId
-          }
+          tags: { public_transport: "platform" }
         }
       ]
     };

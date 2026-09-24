@@ -15,7 +15,6 @@ import {
 import {
   CONSOLIDATED_SOURCE_FEED_ID,
   DEFAULT_STREET_NAME_CLEANUP,
-  identityTagKey,
   isValidSourceFeedId,
   normalizeSourceFeedId
 } from "../domain/source-feed";
@@ -133,11 +132,7 @@ export function createCustomProfileForFeedIds(
       streetNameCleanup: DEFAULT_STREET_NAME_CLEANUP,
       additionalTags: []
     })),
-    mappingRules: normalizedIds.map((sourceFeedId) => ({
-      key: identityTagKey(sourceFeedId),
-      value: { kind: "field", field: "stop_id" },
-      appliesTo: { sourceFeedIds: [sourceFeedId] }
-    })),
+    mappingRules: [],
     candidateRadiusMeters: 50,
     autoIdRadiusMeters: 10
   };

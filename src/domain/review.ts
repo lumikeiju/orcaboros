@@ -263,8 +263,6 @@ export function legacyIdentityKeys(
 export type DraftFeatureValidation = {
   featureId: string;
   state: FeatureReviewState;
-  requiredIdentityKey: string;
-  requiredIdentityValue: string;
   selectedNodeId: number | undefined;
   selectedElement?: OsmElementRef;
 };
@@ -287,8 +285,7 @@ function selectedRef(
 }
 
 export function validateReviewCompletion(
-  reviews: readonly DraftFeatureValidation[],
-  postChangeTagsByNode: ReadonlyMap<number | string, OsmTagSet>
+  reviews: readonly DraftFeatureValidation[]
 ): readonly string[] {
   const issues: string[] = [];
   for (const review of reviews) {
@@ -301,17 +298,6 @@ export function validateReviewCompletion(
       if (selected === undefined) {
         issues.push(`${review.featureId} has no selected OSM element`);
         continue;
-      }
-      const tags =
-        postChangeTagsByNode.get(elementKey(selected)) ??
-        (selected.type === "node"
-          ? postChangeTagsByNode.get(selected.id)
-          : undefined);
-      if (
-        tags === undefined ||
-        tags[review.requiredIdentityKey] !== review.requiredIdentityValue
-      ) {
-        issues.push(`${review.featureId} has no required identity tag`);
       }
     }
     if (

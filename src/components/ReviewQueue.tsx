@@ -16,7 +16,11 @@ import {
   selectedElementRef,
   TagResolution
 } from "../domain/review";
-import { identityTagKey } from "../domain/source-feed";
+import {
+  DEFAULT_GEOMETRY_TARGET,
+  identityTagKey,
+  type GeometryTarget
+} from "../domain/source-feed";
 
 const REVIEW_PAGE_SIZE = 10;
 
@@ -124,6 +128,7 @@ type ReviewQueueProps = {
   reviews: ReadonlyMap<string, FeatureReview>;
   nodes?: readonly OsmElement[];
   validStopIds?: ReadonlyMap<string, ReadonlySet<string>>;
+  geometryTargets?: ReadonlyMap<string, GeometryTarget>;
   exactMatchRadiusMeters?: number;
   onAction: (featureId: string, action: ReviewAction) => void;
   focusedFeatureId?: string;
@@ -136,6 +141,7 @@ export function ReviewQueue({
   reviews,
   nodes = [],
   validStopIds = new Map(),
+  geometryTargets,
   exactMatchRadiusMeters = Number.POSITIVE_INFINITY,
   onAction,
   focusedFeatureId,
@@ -554,14 +560,31 @@ export function ReviewQueue({
     }
     const { stop, result, review } = item;
     const candidate = getPrimaryCandidate(result);
-    const gtfsIdentity = stop.stopId;
-    const osmIdentity = candidate?.node.tags[stop.identityTag.key];
-    const gtfsName = stop.stopNameExpanded;
-    const osmName = candidate?.node.tags.name;
     const gtfsLatitude = stop.latitude.toFixed(6);
     const osmLatitude = candidate?.node.latitude.toFixed(6);
     const gtfsLongitude = stop.longitude.toFixed(6);
     const osmLongitude = candidate?.node.longitude.toFixed(6);
+    const geometryTarget =
+      geometryTargets?.get(stop.sourceFeedId) ?? DEFAULT_GEOMETRY_TARGET;
+    const coordinatesWillChange =
+      candidate === undefined ||
+      (geometryTarget === "gtfs" && !isOsmWay(candidate.node));
+    const proposedTags = new Map(
+      (review?.proposals ?? []).map(({ key, proposedValue }) => [
+        key,
+        proposedValue
+      ])
+    );
+    const osmTags = candidate?.node.tags ?? {};
+    const tagRows = [
+      ...new Set([...proposedTags.keys(), ...Object.keys(osmTags)])
+    ]
+      .sort((left, right) => left.localeCompare(right))
+      .map((key) => ({
+        key,
+        gtfsValue: proposedTags.get(key),
+        osmValue: osmTags[key]
+      }));
     const highlightComparedValues = (
       gtfsValue: string,
       osmValue: string | undefined
@@ -570,6 +593,15 @@ export function ReviewQueue({
         return "add";
       }
       return gtfsValue === osmValue ? "none" : "both";
+    };
+    const highlightComparedTags = (
+      gtfsValue: string | undefined,
+      osmValue: string | undefined
+    ): DiffHighlight => {
+      if (gtfsValue === undefined || gtfsValue === osmValue) {
+        return "none";
+      }
+      return osmValue === undefined ? "add" : "both";
     };
     return (
       <article className="review-detail">
@@ -593,7 +625,8 @@ export function ReviewQueue({
           </div>
           <table className="review-diff-columns">
             <caption className="visually-hidden">
-              GTFS values on the left and OSM values on the right
+              GTFS-mapped tags on the left and OSM tags on the right;
+              coordinates and match distance are shown as metadata
             </caption>
             <thead>
               <tr>
@@ -602,40 +635,37 @@ export function ReviewQueue({
               </tr>
             </thead>
             <tbody>
-              <ReviewDiffRow
-                gtfsLabel="stop_id"
-                gtfsValue={gtfsIdentity}
-                osmLabel="identity"
-                osmValue={osmIdentity ?? "(missing)"}
-                highlight={highlightComparedValues(gtfsIdentity, osmIdentity)}
-              />
-              <ReviewDiffRow
-                gtfsLabel="stop_name"
-                gtfsValue={gtfsName}
-                osmLabel="name"
-                osmValue={osmName ?? "(missing)"}
-                highlight={highlightComparedValues(gtfsName, osmName)}
-              />
+              {tagRows.map(({ key, gtfsValue, osmValue }) => (
+                <ReviewDiffRow
+                  key={key}
+                  gtfsLabel={key}
+                  gtfsValue={gtfsValue ?? "(not proposed)"}
+                  osmLabel={key}
+                  osmValue={osmValue ?? "(missing)"}
+                  highlight={highlightComparedTags(gtfsValue, osmValue)}
+                />
+              ))}
               <ReviewDiffRow
                 gtfsLabel="stop_lat"
                 gtfsValue={gtfsLatitude}
                 osmLabel="latitude"
                 osmValue={osmLatitude ?? "(missing)"}
-                highlight={highlightComparedValues(gtfsLatitude, osmLatitude)}
+                highlight={
+                  coordinatesWillChange
+                    ? highlightComparedValues(gtfsLatitude, osmLatitude)
+                    : "none"
+                }
               />
               <ReviewDiffRow
                 gtfsLabel="stop_lon"
                 gtfsValue={gtfsLongitude}
                 osmLabel="longitude"
                 osmValue={osmLongitude ?? "(missing)"}
-                highlight={highlightComparedValues(gtfsLongitude, osmLongitude)}
-              />
-              <ReviewDiffRow
-                gtfsLabel="(metadata)"
-                gtfsValue="—"
-                osmLabel="highway"
-                osmValue={candidate?.node.tags.highway ?? "(missing)"}
-                highlight="none"
+                highlight={
+                  coordinatesWillChange
+                    ? highlightComparedValues(gtfsLongitude, osmLongitude)
+                    : "none"
+                }
               />
               <ReviewDiffRow
                 gtfsLabel="(metadata)"

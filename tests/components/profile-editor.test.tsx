@@ -46,8 +46,20 @@ describe("ProfileEditor", () => {
     );
 
     expect(screen.getByText("custom_zone")).toBeInTheDocument();
-    expect(screen.getByLabelText("OSM tag key for stop_id")).toHaveValue(
-      "gtfs:stop_id:US-WA-KCM"
+    const stopIdMapping = screen.getByLabelText("OSM tag key for stop_id");
+    expect(stopIdMapping).toHaveValue("");
+    fireEvent.change(stopIdMapping, {
+      target: { value: "gtfs:stop_id:US-WA-KCM" }
+    });
+    expect(onChange).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        mappingRules: expect.arrayContaining([
+          {
+            key: "gtfs:stop_id:US-WA-KCM",
+            value: { kind: "field", field: "stop_id" }
+          }
+        ])
+      })
     );
     fireEvent.change(screen.getByLabelText("OSM tag key for custom_zone"), {
       target: { value: "ref:zone" }
@@ -65,15 +77,26 @@ describe("ProfileEditor", () => {
     );
   });
 
-  it("shows a mid-file source value and resulting identity tag", () => {
+  it("shows that an unmapped field is ignored and previews explicit mappings", () => {
     const profile = getProfileForFeedId("US-WA-KCM");
     if (profile === undefined) {
       throw new Error("stock fixture profile is missing");
     }
+    const profileWithStopIdMapping = {
+      ...profile,
+      mappingRules: [
+        ...profile.mappingRules,
+        {
+          key: "gtfs:stop_id:US-WA-KCM",
+          value: { kind: "field" as const, field: "stop_id" },
+          appliesTo: { sourceFeedIds: ["US-WA-KCM"] }
+        }
+      ]
+    };
     vi.spyOn(Math, "random").mockReturnValue(0.5);
     render(
       <ProfileEditor
-        profile={profile}
+        profile={profileWithStopIdMapping}
         availableFields={["stop_id"]}
         exampleStops={Array.from({ length: 100 }, (_, index) =>
           exampleStop(String(index))
@@ -186,10 +209,10 @@ describe("ProfileEditor", () => {
     expect(screen.getByText("Sound Transit (US-WA-ST)")).toBeInTheDocument();
     expect(
       screen.getByLabelText("OSM tag key for US-WA-KCM stop_id")
-    ).toHaveValue("gtfs:stop_id:US-WA-KCM");
+    ).toHaveValue("");
     expect(
       screen.getByLabelText("OSM tag key for US-WA-ST stop_id")
-    ).toHaveValue("gtfs:stop_id:US-WA-ST");
+    ).toHaveValue("");
     expect(
       screen.getByLabelText("OSM tag key for US-WA-KCM kcm_zone")
     ).toBeInTheDocument();

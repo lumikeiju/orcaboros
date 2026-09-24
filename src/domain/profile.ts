@@ -636,9 +636,5 @@ export function evaluateMappingRules(
     }
     tags.push({ key: rule.key, value });
   }
-  const identity = stop.identityTag;
-  if (!tags.some((tag) => tag.key === identity.key)) {
-    tags.push(identity);
-  }
   return tags;
 }

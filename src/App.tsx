@@ -44,7 +44,13 @@ import {
   selectedElementRef,
   staleIdentityKeys
 } from "./domain/review";
-import { elementKey, isOsmWay, osmElementRef, OsmElement } from "./domain/osm";
+import {
+  elementKey,
+  isOsmWay,
+  osmElementRef,
+  OsmElement,
+  OsmTagSet
+} from "./domain/osm";
 import {
   ChangeDraft,
   coordinatesForGeometryTarget,
@@ -74,7 +80,7 @@ import {
   CONSOLIDATED_SOURCE_FEED_ID,
   DEFAULT_GEOMETRY_TARGET,
   DEFAULT_STREET_NAME_CLEANUP,
-  identityTagKey,
+  type GeometryTarget,
   normalizeSourceFeedId,
   STOCK_SOURCE_FEED_DEFINITIONS
 } from "./domain/source-feed";
@@ -211,6 +217,16 @@ export function App(): ReactElement {
   const availableFields = useMemo(
     () => [...new Set(feedSummaries.flatMap((summary) => summary.fields))],
     [feedSummaries]
+  );
+  const mappedTagsByFeature = useMemo(
+    () =>
+      new Map(
+        stops.map((stop): [string, OsmTagSet] => [
+          stop.featureId,
+          mapStopToOsmTags(profile, stop)
+        ])
+      ),
+    [profile, stops]
   );
   const exampleRowCounts = useMemo(
     () =>
@@ -818,19 +834,10 @@ export function App(): ReactElement {
         computePostChangeTags(existing?.tags ?? element.tags, proposals),
         removeKeys
       );
-      if (tags[identityTagKey(stop.sourceFeedId)] !== stop.stopId) {
-        throw new Error(
-          `${stop.featureId} does not have its required identity tag`
-        );
-      }
       modifications.set(elementKey(element), {
         node: element,
         coordinates,
         featureIds: [...(existing?.featureIds ?? []), stop.featureId],
-        requiredIdentityTags: [
-          ...(existing?.requiredIdentityTags ?? []),
-          stop.identityTag
-        ],
         tags
       });
     }
@@ -1448,6 +1455,7 @@ export function App(): ReactElement {
               matches={matches}
               reviews={reviews}
               validStopIds={validStopIds}
+              mappedTagsByFeature={mappedTagsByFeature}
               exactMatchRadiusMeters={profile.autoIdRadiusMeters}
               focusedFeatureId={focusedFeatureId}
               onFeatureClick={setFocusedFeatureId}
@@ -1475,6 +1483,14 @@ export function App(): ReactElement {
                 reviews={reviews}
                 nodes={nodes}
                 validStopIds={validStopIds}
+                geometryTargets={
+                  new Map<string, GeometryTarget>(
+                    profile.sourceFeeds.map(({ id, geometryTarget }) => [
+                      id,
+                      geometryTarget
+                    ])
+                  )
+                }
                 exactMatchRadiusMeters={profile.autoIdRadiusMeters}
                 onAction={applyAction}
                 focusedFeatureId={focusedFeatureId}

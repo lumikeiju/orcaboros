@@ -4,7 +4,9 @@ import { cleanup } from "@testing-library/react";
 import { ReviewQueue } from "../../src/components/ReviewQueue";
 import type { EligibleStop } from "../../src/domain/gtfs";
 import type { CandidateMatch } from "../../src/domain/matching";
-import type { OsmNode } from "../../src/domain/osm";
+import type { OsmNode, OsmWay } from "../../src/domain/osm";
+import { buildTagProposals, type FeatureReview } from "../../src/domain/review";
+import type { GeometryTarget } from "../../src/domain/source-feed";
 
 const stop: EligibleStop = {
   featureId: "US-WA-CT:23",
@@ -52,6 +54,57 @@ function makeExactCandidate(
   };
 }
 
+function makeReview(
+  featureId: string,
+  proposedTags: Readonly<Record<string, string>>
+): FeatureReview {
+  return {
+    featureId,
+    state: "unreviewed",
+    selectedNodeId: undefined,
+    createCoordinates: undefined,
+    proposals: buildTagProposals(undefined, proposedTags)
+  };
+}
+
+function tagFieldCount(container: HTMLElement, key: string): number {
+  return [
+    ...container.querySelectorAll(".review-diff-columns .review-diff-field")
+  ].filter((field) => field.textContent === key).length;
+}
+
+function diffRow(container: HTMLElement, fieldName: string): Element | null {
+  return (
+    [...container.querySelectorAll(".review-diff-field")]
+      .find((field) => field.textContent === fieldName)
+      ?.closest("tr") ?? null
+  );
+}
+
+function renderCoordinateComparison(
+  geometryTarget: GeometryTarget,
+  node: OsmNode | OsmWay
+): HTMLElement {
+  const candidate: CandidateMatch = {
+    ...makeExactCandidate(node.id, 5),
+    node,
+    exactIdentity: false
+  };
+  const { container } = render(
+    <ReviewQueue
+      stops={[stop]}
+      matches={
+        new Map([[stop.featureId, { kind: "review", candidates: [candidate] }]])
+      }
+      reviews={new Map()}
+      geometryTargets={new Map([[stop.sourceFeedId, geometryTarget]])}
+      onAction={vi.fn()}
+      onFocusFeature={vi.fn()}
+    />
+  );
+  return container;
+}
+
 afterEach(() => cleanup());
 
 describe("ReviewQueue", () => {
@@ -61,7 +114,18 @@ describe("ReviewQueue", () => {
       <ReviewQueue
         stops={[stop]}
         matches={new Map()}
-        reviews={new Map()}
+        reviews={
+          new Map([
+            [
+              stop.featureId,
+              makeReview(stop.featureId, {
+                [stop.identityTag.key]: stop.stopId,
+                name: stop.stopNameExpanded,
+                public_transport: "platform"
+              })
+            ]
+          ])
+        }
         onAction={vi.fn()}
         onFocusFeature={onFocusFeature}
       />
@@ -84,27 +148,132 @@ describe("ReviewQueue", () => {
       container.querySelectorAll(".review-diff-columns tbody tr")
     ).toHaveLength(6);
     expect(container.querySelectorAll(".review-diff-row.is-add")).toHaveLength(
-      4
+      5
     );
     expect(container.querySelectorAll(".review-diff-row.is-none")).toHaveLength(
-      2
+      1
     );
     expect(
       container.querySelectorAll(
         ".review-diff-row.is-add .review-diff-cell-add.is-highlighted"
       )
-    ).toHaveLength(4);
+    ).toHaveLength(5);
     expect(
       container.querySelectorAll(
         ".review-diff-row.is-add .review-diff-cell-remove.is-highlighted"
       )
     ).toHaveLength(0);
+    expect(tagFieldCount(container, "public_transport")).toBe(2);
+    expect(screen.getByText("platform")).toBeInTheDocument();
     fireEvent.click(
       screen.getByRole("button", {
         name: "Focus State Avenue & 92nd Street NE on the map"
       })
     );
     expect(onFocusFeature).toHaveBeenCalledWith(stop.featureId);
+  });
+
+  it("shows every GTFS-mapped tag and OSM candidate tag", () => {
+    const candidate = {
+      ...makeExactCandidate(21, 3),
+      exactIdentity: false,
+      node: {
+        ...makeExactCandidate(21, 3).node,
+        tags: {
+          [stop.identityTag.key]: stop.stopId,
+          name: "Existing stop name",
+          highway: "bus_stop",
+          shelter: "yes"
+        }
+      }
+    };
+    const proposedTags = {
+      [stop.identityTag.key]: stop.stopId,
+      name: stop.stopNameExpanded,
+      public_transport: "platform",
+      ref: "CT-23"
+    };
+    const { container } = render(
+      <ReviewQueue
+        stops={[stop]}
+        matches={
+          new Map([
+            [stop.featureId, { kind: "review", candidates: [candidate] }]
+          ])
+        }
+        reviews={
+          new Map([[stop.featureId, makeReview(stop.featureId, proposedTags)]])
+        }
+        onAction={vi.fn()}
+        onFocusFeature={vi.fn()}
+      />
+    );
+
+    const rows = container.querySelectorAll(".review-diff-columns tbody tr");
+    expect(rows).toHaveLength(9);
+    expect(tagFieldCount(container, stop.identityTag.key)).toBe(2);
+    expect(tagFieldCount(container, "public_transport")).toBe(2);
+    expect(tagFieldCount(container, "ref")).toBe(2);
+    expect(tagFieldCount(container, "highway")).toBe(2);
+    expect(tagFieldCount(container, "shelter")).toBe(2);
+    expect(screen.getByText("platform")).toBeInTheDocument();
+    expect(screen.getByText("CT-23")).toBeInTheDocument();
+    expect(screen.getByText("bus_stop")).toBeInTheDocument();
+    expect(screen.getByText("yes")).toBeInTheDocument();
+    expect(screen.getAllByText("(not proposed)")).toHaveLength(2);
+    expect(screen.getAllByText("(missing)")).toHaveLength(2);
+
+    const rowForTag = (key: string): Element | null =>
+      [...container.querySelectorAll(".review-diff-field")]
+        .find((field) => field.textContent === key)
+        ?.closest("tr") ?? null;
+    expect(rowForTag("public_transport")).toHaveClass("is-add");
+    expect(rowForTag("name")).toHaveClass("is-both");
+    expect(rowForTag("shelter")).toHaveClass("is-none");
+  });
+
+  it("does not mark coordinates as changes for the OSM geometry target", () => {
+    const node: OsmNode = {
+      id: 30,
+      version: 1,
+      latitude: 48.015,
+      longitude: -122.201,
+      tags: {}
+    };
+    const container = renderCoordinateComparison("osm", node);
+
+    expect(diffRow(container, "stop_lat")).toHaveClass("is-none");
+    expect(diffRow(container, "stop_lon")).toHaveClass("is-none");
+  });
+
+  it("marks changed node coordinates for the GTFS geometry target", () => {
+    const node: OsmNode = {
+      id: 31,
+      version: 1,
+      latitude: 48.015,
+      longitude: -122.201,
+      tags: {}
+    };
+    const container = renderCoordinateComparison("gtfs", node);
+
+    expect(diffRow(container, "stop_lat")).toHaveClass("is-both");
+    expect(diffRow(container, "stop_lon")).toHaveClass("is-both");
+  });
+
+  it("does not mark platform-way coordinates as changes for the GTFS target", () => {
+    const way: OsmWay = {
+      type: "way",
+      id: 32,
+      version: 1,
+      latitude: 48.015,
+      longitude: -122.201,
+      nodeRefs: [1, 2, 3],
+      tags: {}
+    };
+    const container = renderCoordinateComparison("gtfs", way);
+
+    expect(diffRow(container, "stop_lat")).toHaveClass("is-none");
+    expect(diffRow(container, "stop_lon")).toHaveClass("is-none");
   });
 
   it("does not focus the map when a nested review action is clicked", () => {

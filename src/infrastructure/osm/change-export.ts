@@ -1,6 +1,5 @@
 import { ChangeDraft, DraftCreate, DraftModify } from "../../domain/change";
 import { FeatureReviewState } from "../../domain/review";
-import { identityTagKey } from "../../domain/source-feed";
 import {
   isOsmWay,
   isValidOsmKey,
@@ -157,19 +156,6 @@ function josmModifyXml(modify: DraftModify): string {
   ].join("\n");
 }
 
-function validateTagsContainIdentity(
-  sourceFeedId: string,
-  stopId: string,
-  tags: OsmTagSet,
-  context: string,
-  issues: string[]
-): void {
-  const key = identityTagKey(sourceFeedId);
-  if (tags[key] !== stopId) {
-    issues.push(`${context} is missing required identity ${key}=${stopId}`);
-  }
-}
-
 export function validateChangeDraft(draft: ChangeDraft): void {
   const issues: string[] = [];
   if (draft.sessionId.length === 0 || draft.snapshotId.length === 0) {
@@ -182,13 +168,6 @@ export function validateChangeDraft(draft: ChangeDraft): void {
         `${create.feature.featureId} is not explicitly selected for creation`
       );
     }
-    validateTagsContainIdentity(
-      create.feature.sourceFeedId,
-      create.feature.stopId,
-      create.tags,
-      create.feature.featureId,
-      issues
-    );
     const duplicateKeys = Object.keys(create.tags).filter(
       (key, index, keys) => keys.indexOf(key) !== index
     );
@@ -247,20 +226,6 @@ export function validateChangeDraft(draft: ChangeDraft): void {
       issues.push(
         `OSM ${elementLabel} ${modify.node.id} has invalid coordinates`
       );
-    }
-    const identityKeys = new Set<string>();
-    for (const identity of modify.requiredIdentityTags) {
-      if (identityKeys.has(identity.key)) {
-        issues.push(
-          `OSM ${elementLabel} ${modify.node.id} has duplicate identity claims`
-        );
-      }
-      identityKeys.add(identity.key);
-      if (modify.tags[identity.key] !== identity.value) {
-        issues.push(
-          `OSM ${elementLabel} ${modify.node.id} is missing required identity ${identity.key}=${identity.value}`
-        );
-      }
     }
   }
   if (issues.length > 0) {

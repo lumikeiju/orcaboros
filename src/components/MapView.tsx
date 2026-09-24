@@ -2,11 +2,17 @@ import { type ReactElement, useEffect, useRef, useState } from "react";
 import type {
   GeoJSONSource,
   Map as MapLibreMap,
-  MapLayerMouseEvent
+  MapLayerMouseEvent,
+  Popup as MapLibrePopup
 } from "maplibre-gl";
 import type { EligibleStop } from "../domain/gtfs";
 import type { CandidateMatch, InitialMatch } from "../domain/matching";
-import { elementKey, isOsmWay, type OsmElement } from "../domain/osm";
+import {
+  elementKey,
+  isOsmWay,
+  type OsmElement,
+  type OsmTagSet
+} from "../domain/osm";
 import { selectedElementRef, type FeatureReview } from "../domain/review";
 import { identityTagKey } from "../domain/source-feed";
 
@@ -43,6 +49,7 @@ type MapViewProps = {
   matches?: ReadonlyMap<string, InitialMatch>;
   reviews?: ReadonlyMap<string, FeatureReview>;
   validStopIds?: ReadonlyMap<string, ReadonlySet<string>>;
+  mappedTagsByFeature?: ReadonlyMap<string, OsmTagSet>;
   exactMatchRadiusMeters?: number;
   focusedFeatureId?: string;
   onFeatureClick?: (featureId: string) => void;
@@ -74,6 +81,7 @@ const HEATMAP_KINDS: readonly MapMarkerKind[] = [
   "removed"
 ];
 const DETAIL_ZOOM = 11;
+const EMPTY_MAPPED_TAGS: ReadonlyMap<string, OsmTagSet> = new Map();
 
 export function shouldShowZoomNotice(zoom: number): boolean {
   return zoom < DETAIL_ZOOM;
@@ -322,6 +330,9 @@ function addFocusHaloLayers(
 type MapData = {
   nodes: readonly OsmElement[];
   stops: readonly EligibleStop[];
+  matches: ReadonlyMap<string, InitialMatch>;
+  reviews: ReadonlyMap<string, FeatureReview>;
+  mappedTagsByFeature: ReadonlyMap<string, OsmTagSet>;
   markers: readonly MapMarker[];
   candidateNodes: readonly OsmElement[];
   focusedFeatureId: string | undefined;
@@ -330,6 +341,103 @@ type MapData = {
 
 type MapFeatureCollection = Parameters<GeoJSONSource["setData"]>[0];
 type StopBounds = [[number, number], [number, number]];
+
+function removedMarkerId(element: OsmElement): string {
+  return `removed-${isOsmWay(element) ? elementKey(element) : element.id}`;
+}
+
+function candidateMatchesElement(
+  result: InitialMatch | undefined,
+  targetElementKey: string
+): boolean {
+  if (result?.kind === "auto-matched") {
+    return elementKey(result.candidate.node) === targetElementKey;
+  }
+  return (
+    result?.kind === "review" &&
+    result.candidates.some(
+      (candidate) => elementKey(candidate.node) === targetElementKey
+    )
+  );
+}
+
+export function getRelatedFeatureIdForOsmElement(
+  element: OsmElement,
+  stops: readonly EligibleStop[],
+  matches: ReadonlyMap<string, InitialMatch>,
+  reviews: ReadonlyMap<string, FeatureReview>,
+  focusedFeatureId?: string
+): string | undefined {
+  const targetElementKey = elementKey(element);
+  const relatedStops = stops.filter((stop) =>
+    candidateMatchesElement(matches.get(stop.featureId), targetElementKey)
+  );
+  const focusedStop = relatedStops.find(
+    (stop) => stop.featureId === focusedFeatureId
+  );
+  if (focusedStop !== undefined) {
+    return focusedStop.featureId;
+  }
+  const selectedStop = relatedStops.find((stop) => {
+    const review = reviews.get(stop.featureId);
+    const selected =
+      review === undefined ? undefined : selectedElementRef(review);
+    return selected !== undefined && elementKey(selected) === targetElementKey;
+  });
+  return selectedStop?.featureId ?? relatedStops[0]?.featureId;
+}
+
+export function createMapPopupContent(
+  title: string,
+  tags: OsmTagSet,
+  tagLabel: string,
+  description?: string
+): HTMLElement {
+  const content = document.createElement("div");
+  content.className = "map-feature-popup";
+  content.setAttribute("role", "group");
+  content.setAttribute("aria-label", `${title} tags`);
+
+  const heading = document.createElement("h3");
+  heading.textContent = title;
+  content.append(heading);
+
+  if (description !== undefined) {
+    const detail = document.createElement("p");
+    detail.className = "map-feature-popup-detail";
+    detail.textContent = description;
+    content.append(detail);
+  }
+
+  const entries = Object.entries(tags).sort(([left], [right]) =>
+    left.localeCompare(right)
+  );
+  if (entries.length === 0) {
+    const emptyMessage = document.createElement("p");
+    emptyMessage.textContent = "No tags.";
+    content.append(emptyMessage);
+    return content;
+  }
+
+  const table = document.createElement("table");
+  const caption = document.createElement("caption");
+  caption.textContent = tagLabel;
+  table.append(caption);
+  const body = document.createElement("tbody");
+  for (const [key, value] of entries) {
+    const row = document.createElement("tr");
+    const keyCell = document.createElement("th");
+    keyCell.scope = "row";
+    keyCell.textContent = key;
+    const valueCell = document.createElement("td");
+    valueCell.textContent = value;
+    row.append(keyCell, valueCell);
+    body.append(row);
+  }
+  table.append(body);
+  content.append(table);
+  return content;
+}
 
 export function getStopBounds(
   stops: readonly EligibleStop[]
@@ -465,7 +573,7 @@ export function buildMapMarkers(
   nodes.forEach((node) => {
     if (removedIds.has(elementKey(node))) {
       markers.push({
-        id: `removed-${isOsmWay(node) ? elementKey(node) : node.id}`,
+        id: removedMarkerId(node),
         kind: "removed",
         processed: false,
         latitude: node.latitude,
@@ -648,6 +756,7 @@ export function MapView({
   matches = new Map(),
   reviews = new Map(),
   validStopIds = new Map(),
+  mappedTagsByFeature = EMPTY_MAPPED_TAGS,
   exactMatchRadiusMeters = Number.POSITIVE_INFINITY,
   focusedFeatureId,
   onFeatureClick,
@@ -675,6 +784,9 @@ export function MapView({
   const mapData = useRef<MapData>({
     nodes,
     stops,
+    matches,
+    reviews,
+    mappedTagsByFeature,
     markers: derivedMapData.markers,
     candidateNodes: derivedMapData.candidateNodes,
     focusedFeatureId,
@@ -685,6 +797,9 @@ export function MapView({
   mapData.current = {
     nodes,
     stops,
+    matches,
+    reviews,
+    mappedTagsByFeature,
     markers: derivedMapData.markers,
     candidateNodes: derivedMapData.candidateNodes,
     focusedFeatureId,
@@ -695,6 +810,7 @@ export function MapView({
 
   useEffect(() => {
     let disposed = false;
+    let activePopup: MapLibrePopup | undefined;
     setShowZoomNotice(false);
     mapLoaded.current = false;
     void import("maplibre-gl").then((module) => {
@@ -833,16 +949,107 @@ export function MapView({
             labelLayerId
           );
         }
-        const interactiveLayerIds = [...markerLayerIds, "map-processed"];
-        const handleMarkerClick = (event: MapLayerMouseEvent): void => {
-          const featureId = event.features?.find(
-            (feature) => typeof feature.properties?.id === "string"
-          )?.properties?.id;
-          if (typeof featureId === "string") {
-            onFeatureClickRef.current?.(featureId);
+        const interactiveLayerIds = [
+          ...markerLayerIds,
+          "map-processed",
+          "osm-candidates"
+        ];
+        const handleFeatureClick = (event: MapLayerMouseEvent): void => {
+          const clickedFeature = event.features?.[0];
+          const clickedId = clickedFeature?.properties?.id;
+          const clickedLayer = clickedFeature?.layer.id;
+          if (
+            typeof clickedId !== "string" ||
+            typeof clickedLayer !== "string"
+          ) {
+            return;
           }
+          const currentData = mapData.current;
+          let title: string;
+          let tags: OsmTagSet;
+          let tagLabel: string;
+          let description: string | undefined;
+          let reviewFeatureId: string | undefined;
+          if (clickedLayer === "osm-candidates") {
+            const element = currentData.candidateNodes.find(
+              (node) => elementKey(node) === clickedId
+            );
+            if (element === undefined) {
+              return;
+            }
+            title = `OSM ${isOsmWay(element) ? "way" : "node"} ${element.id}`;
+            tags = element.tags;
+            tagLabel = "OSM tags";
+            reviewFeatureId = getRelatedFeatureIdForOsmElement(
+              element,
+              currentData.stops,
+              currentData.matches,
+              currentData.reviews,
+              currentData.focusedFeatureId
+            );
+            const relatedStop = currentData.stops.find(
+              (stop) => stop.featureId === reviewFeatureId
+            );
+            description =
+              relatedStop === undefined
+                ? "No review item is linked to this OSM element."
+                : `Related stop: ${relatedStop.stopNameExpanded}`;
+          } else {
+            const marker = currentData.markers.find(
+              (candidate) => candidate.id === clickedId
+            );
+            if (marker === undefined) {
+              return;
+            }
+            reviewFeatureId = marker.id;
+            if (marker.kind === "removed") {
+              const element = currentData.nodes.find(
+                (node) => removedMarkerId(node) === marker.id
+              );
+              if (element === undefined) {
+                return;
+              }
+              title = `OSM ${isOsmWay(element) ? "way" : "node"} ${element.id}`;
+              tags = element.tags;
+              tagLabel = "OSM tags";
+            } else {
+              const stop = currentData.stops.find(
+                (candidate) => candidate.featureId === marker.id
+              );
+              if (stop === undefined) {
+                return;
+              }
+              title = `GTFS stop: ${stop.stopNameExpanded}`;
+              tags = currentData.mappedTagsByFeature.get(stop.featureId) ?? {};
+              tagLabel = "Profile-mapped tags";
+            }
+          }
+          if (reviewFeatureId !== undefined) {
+            onFeatureClickRef.current?.(reviewFeatureId);
+          }
+          activePopup?.remove();
+          const canvasHeight = instance.getCanvas().clientHeight;
+          const popupContent = createMapPopupContent(
+            title,
+            tags,
+            tagLabel,
+            description
+          );
+          popupContent.style.maxHeight = `${Math.max(
+            96,
+            Math.min(352, Math.floor(canvasHeight / 2) - 48)
+          )}px`;
+          activePopup = new module.Popup({
+            closeButton: true,
+            closeOnClick: true,
+            maxWidth: "20rem",
+            anchor: event.point.y > canvasHeight / 2 ? "bottom" : "top"
+          })
+            .setLngLat(event.lngLat)
+            .setDOMContent(popupContent)
+            .addTo(instance);
         };
-        instance.on("click", interactiveLayerIds, handleMarkerClick);
+        instance.on("click", interactiveLayerIds, handleFeatureClick);
         instance.on("mouseenter", interactiveLayerIds, () => {
           instance.getCanvas().style.cursor = "pointer";
         });
@@ -868,6 +1075,7 @@ export function MapView({
     return () => {
       disposed = true;
       mapLoaded.current = false;
+      activePopup?.remove();
       map.current?.remove();
       map.current = null;
     };

@@ -1,5 +1,5 @@
 import { EligibleStop } from "./gtfs";
-import { OsmElement, OsmTag, OsmTagSet } from "./osm";
+import { OsmElement, OsmTagSet } from "./osm";
 import { FeatureReviewState } from "./review";
 import type { GeometryTarget } from "./source-feed";
 
@@ -15,7 +15,6 @@ export type DraftModify = {
   node: OsmElement;
   coordinates: { latitude: number; longitude: number };
   featureIds: readonly string[];
-  requiredIdentityTags: readonly OsmTag[];
   tags: OsmTagSet;
 };
 

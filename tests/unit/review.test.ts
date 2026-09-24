@@ -213,35 +213,25 @@ describe("review state and tag decisions", () => {
     ).toBe("create-selected");
   });
 
-  it("blocks export for unresolved or identity-incomplete reviews", () => {
+  it("blocks export for unresolved reviews without requiring identity tags", () => {
     const stopFixture = fixtureStop();
-    const issues = validateReviewCompletion(
-      [
-        {
-          featureId: stopFixture.featureId,
-          state: "unreviewed",
-          requiredIdentityKey: stopFixture.identityTag.key,
-          requiredIdentityValue: stopFixture.stopId,
-          selectedNodeId: undefined
-        }
-      ],
-      new Map()
-    );
+    const issues = validateReviewCompletion([
+      {
+        featureId: stopFixture.featureId,
+        state: "unreviewed",
+        selectedNodeId: undefined
+      }
+    ]);
     expect(issues).toContain(`${stopFixture.featureId} is still unreviewed`);
     expect(
-      validateReviewCompletion(
-        [
-          {
-            featureId: stopFixture.featureId,
-            state: "match-selected",
-            requiredIdentityKey: stopFixture.identityTag.key,
-            requiredIdentityValue: stopFixture.stopId,
-            selectedNodeId: 1
-          }
-        ],
-        new Map([[1, { name: "Missing identity" }]])
-      )
-    ).toContain(`${stopFixture.featureId} has no required identity tag`);
+      validateReviewCompletion([
+        {
+          featureId: stopFixture.featureId,
+          state: "match-selected",
+          selectedNodeId: 1
+        }
+      ])
+    ).toEqual([]);
   });
 });
 

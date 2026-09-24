@@ -11,6 +11,8 @@ Orcaboros is a static React/Vite application. The browser is the only runtime; t
 - `src/workers/` contains long-running import and matching message contracts. Worker errors are typed and sanitized before they reach the UI.
 - `src/components/` and `src/features/` contain React presentation and interaction. They consume domain contracts rather than importing domain code from browser-specific modules.
 
+At detail zoom, status, processed, and OSM candidate map icons are clickable. Popups show profile-mapped tags for GTFS stops and current tags for OSM elements; clicking a candidate also focuses its associated review item when one exists.
+
 ## Session lifecycle
 
 An import is staged under a new session ID. Only after every selected archive has a valid source identity, required `stops.txt` columns, unique stop IDs, and validated derived records does the active-session pointer change. A failed or cancelled staging operation removes its records and leaves the previous active session untouched.

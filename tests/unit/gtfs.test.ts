@@ -40,7 +40,7 @@ describe("GTFS stop eligibility", () => {
     }
   });
 
-  it("maps the stock Everett profile to a scoped identity and cleaned name", () => {
+  it("maps only fields configured in the stock Everett profile", () => {
     const profile = getProfileForFeedId("US-WA-ET");
     if (profile === undefined) {
       throw new Error("stock Everett profile is missing");
@@ -59,10 +59,11 @@ describe("GTFS stop eligibility", () => {
       throw new Error("Everett fixture stop is invalid");
     }
 
-    expect(mapStopToOsmTags(profile, result.stop)).toMatchObject({
-      "gtfs:stop_id:US-WA-ET": "64",
-      name: "Merrill Creek Parkway & Glenwood Avenue - Westbound"
-    });
+    const tags = mapStopToOsmTags(profile, result.stop);
+    expect(tags.name).toBe(
+      "Merrill Creek Parkway & Glenwood Avenue - Westbound"
+    );
+    expect(tags).not.toHaveProperty("gtfs:stop_id:US-WA-ET");
   });
 
   it("can disable street-name cleanup without changing the raw stop name", () => {
@@ -161,12 +162,14 @@ describe("GTFS stop eligibility", () => {
     if (!("stop" in result)) {
       throw new Error("fixture stop is invalid");
     }
-    expect(evaluateMappingRules(profile, result.stop)).toEqual(
-      expect.arrayContaining([
-        { key: "network", value: "King County Metro" },
-        { key: "gtfs:stop_id:US-WA-KCM", value: "KCM-1" }
-      ])
-    );
+    expect(evaluateMappingRules(profile, result.stop)).toContainEqual({
+      key: "network",
+      value: "King County Metro"
+    });
+    expect(evaluateMappingRules(profile, result.stop)).not.toContainEqual({
+      key: result.stop.identityTag.key,
+      value: result.stop.identityTag.value
+    });
     expect(
       evaluateMappingRules(profile, {
         ...result.stop,
@@ -272,6 +275,14 @@ describe("GTFS stop eligibility", () => {
     expect(evaluateMappingRules(profile, kcmResult.stop)).not.toEqual(
       expect.arrayContaining([{ key: "operator", value: "Sound Transit" }])
     );
+    expect(evaluateMappingRules(profile, kcmResult.stop)).toContainEqual({
+      key: kcmResult.stop.identityTag.key,
+      value: kcmResult.stop.identityTag.value
+    });
+    expect(evaluateMappingRules(profile, stResult.stop)).toContainEqual({
+      key: stResult.stop.identityTag.key,
+      value: stResult.stop.identityTag.value
+    });
   });
 
   it("migrates legacy global additional tags into their feed fields", () => {
