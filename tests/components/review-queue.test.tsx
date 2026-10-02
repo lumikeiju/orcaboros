@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup } from "@testing-library/react";
 import { ReviewQueue } from "../../src/components/ReviewQueue";
@@ -108,7 +108,7 @@ function renderCoordinateComparison(
 afterEach(() => cleanup());
 
 describe("ReviewQueue", () => {
-  it("focuses the map when a review card is activated", () => {
+  it("focuses the map with an explicit button in semantic list items", () => {
     const onFocusFeature = vi.fn();
     const { container } = render(
       <ReviewQueue
@@ -165,6 +165,8 @@ describe("ReviewQueue", () => {
     ).toHaveLength(0);
     expect(tagFieldCount(container, "public_transport")).toBe(2);
     expect(screen.getByText("platform")).toBeInTheDocument();
+
+    expect(container.querySelector("li[role='button']")).toBeNull();
     fireEvent.click(
       screen.getByRole("button", {
         name: "Focus State Avenue & 92nd Street NE on the map"
@@ -232,6 +234,43 @@ describe("ReviewQueue", () => {
     expect(rowForTag("shelter")).toHaveClass("is-none");
   });
 
+  it("highlights configured OSM key removals in the comparison", () => {
+    const candidate = {
+      ...makeExactCandidate(22, 3),
+      exactIdentity: false,
+      node: {
+        ...makeExactCandidate(22, 3).node,
+        tags: { shelter: "yes" }
+      }
+    };
+    const review: FeatureReview = {
+      featureId: stop.featureId,
+      state: "auto-matched",
+      selectedNodeId: candidate.node.id,
+      selectedElement: { type: "node", id: candidate.node.id },
+      createCoordinates: undefined,
+      proposals: buildTagProposals(candidate.node, {}, [], ["shelter"])
+    };
+    const { container } = render(
+      <ReviewQueue
+        stops={[stop]}
+        matches={
+          new Map([
+            [stop.featureId, { kind: "review", candidates: [candidate] }]
+          ])
+        }
+        reviews={new Map([[stop.featureId, review]])}
+        onAction={vi.fn()}
+        onFocusFeature={vi.fn()}
+      />
+    );
+
+    expect(diffRow(container, "shelter")).toHaveClass("is-remove");
+    expect(
+      diffRow(container, "shelter")?.querySelector(".review-diff-cell-remove")
+    ).toHaveClass("is-highlighted");
+  });
+
   it("does not mark coordinates as changes for the OSM geometry target", () => {
     const node: OsmNode = {
       id: 30,
@@ -276,7 +315,7 @@ describe("ReviewQueue", () => {
     expect(diffRow(container, "stop_lon")).toHaveClass("is-none");
   });
 
-  it("does not focus the map when a nested review action is clicked", () => {
+  it("does not focus the map when a review decision is clicked", () => {
     const onFocusFeature = vi.fn();
     const onAction = vi.fn();
     render(
@@ -289,7 +328,11 @@ describe("ReviewQueue", () => {
       />
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Skip feature" }));
+    fireEvent.click(
+      within(screen.getByRole("list")).getByRole("button", {
+        name: "Skip feature"
+      })
+    );
     expect(onFocusFeature).not.toHaveBeenCalled();
     expect(onAction).toHaveBeenCalledWith(stop.featureId, { type: "skip" });
   });

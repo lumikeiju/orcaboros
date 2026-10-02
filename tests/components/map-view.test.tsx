@@ -19,10 +19,12 @@ import type { OsmNode } from "../../src/domain/osm";
 import type { FeatureReview } from "../../src/domain/review";
 
 const maplibreState = vi.hoisted(() => ({
+  calls: [] as string[],
   maps: [] as Array<{
     layers: string[];
     emitClick: (layerId: string, id: string) => void;
   }>,
+  workerUrls: [] as string[],
   popups: [] as Array<{
     content: HTMLElement | undefined;
     removed: boolean;
@@ -43,6 +45,7 @@ vi.mock("maplibre-gl", () => {
     >();
 
     constructor() {
+      maplibreState.calls.push("map");
       maplibreState.maps.push(this);
     }
 
@@ -147,12 +150,21 @@ vi.mock("maplibre-gl", () => {
     }
   }
 
-  return { Map: MockMap, Popup: MockPopup };
+  return {
+    Map: MockMap,
+    Popup: MockPopup,
+    setWorkerUrl(url: string) {
+      maplibreState.calls.push("worker-url");
+      maplibreState.workerUrls.push(url);
+    }
+  };
 });
 
 afterEach(() => {
   cleanup();
+  maplibreState.calls.length = 0;
   maplibreState.maps.length = 0;
+  maplibreState.workerUrls.length = 0;
   maplibreState.popups.length = 0;
 });
 
@@ -232,6 +244,16 @@ describe("MapLegend", () => {
 });
 
 describe("MapView feature interactions", () => {
+  it("sets the bundled worker URL before creating the map", async () => {
+    render(<MapView nodes={[]} />);
+
+    await waitFor(() => expect(maplibreState.maps).toHaveLength(1));
+
+    expect(maplibreState.workerUrls).toHaveLength(1);
+    expect(maplibreState.workerUrls[0]).not.toBe("");
+    expect(maplibreState.calls.slice(0, 2)).toEqual(["worker-url", "map"]);
+  });
+
   it("opens tag popups and focuses the queue for stop and OSM candidate icons", async () => {
     const node: OsmNode = {
       id: 50,

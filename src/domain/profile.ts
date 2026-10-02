@@ -42,6 +42,7 @@ export type MappingRule = {
 export type ProfileSourceFeed = SourceFeedDefinition & {
   streetNameCleanup: boolean;
   additionalTags?: readonly MappingRule[];
+  removeKeys?: readonly string[];
 };
 
 export type MappingProfile = {
@@ -211,6 +212,16 @@ export function validateMappingProfile(
           message: "must be a boolean"
         });
       }
+      const removeKeys =
+        stringArray(item.removeKeys, `${path}.removeKeys`, issues) ?? [];
+      removeKeys.forEach((key, keyIndex) => {
+        if (!isValidOsmKey(key)) {
+          issues.push({
+            path: `${path}.removeKeys[${keyIndex}]`,
+            message: "is not a safe OSM key"
+          });
+        }
+      });
       let metadata: Record<string, string> | undefined;
       if (item.metadata !== undefined) {
         if (!isRecord(item.metadata)) {
@@ -254,7 +265,8 @@ export function validateMappingProfile(
             ? streetNameCleanup
             : DEFAULT_STREET_NAME_CLEANUP,
         metadata,
-        additionalTags: []
+        additionalTags: [],
+        removeKeys
       });
     });
   }
@@ -637,4 +649,15 @@ export function evaluateMappingRules(
     tags.push({ key: rule.key, value });
   }
   return tags;
+}
+
+export function evaluateRemovalKeys(
+  profile: MappingProfile,
+  stop: Pick<EligibleStop, "sourceFeedId">
+): readonly string[] {
+  return (
+    profile.sourceFeeds.find(
+      (sourceFeed) => sourceFeed.id === stop.sourceFeedId
+    )?.removeKeys ?? []
+  );
 }

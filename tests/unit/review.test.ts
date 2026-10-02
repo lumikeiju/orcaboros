@@ -52,6 +52,29 @@ describe("review state and tag decisions", () => {
     ).toBe("keep-current");
   });
 
+  it("defaults configured OSM key removals to remove while allowing review override", () => {
+    const taggedNode: OsmNode = {
+      ...node,
+      tags: { ...node.tags, obsolete: "legacy" }
+    };
+    const proposals = buildTagProposals(taggedNode, {}, [], ["obsolete"]);
+    const removal = proposals.find((proposal) => proposal.key === "obsolete");
+    expect(removal?.defaultResolution).toBe("remove");
+    expect(removal?.resolution).toBe("remove");
+    expect(
+      computePostChangeTags(taggedNode.tags, proposals)
+    ).not.toHaveProperty("obsolete");
+
+    const kept = proposals.map((proposal) =>
+      proposal.key === "obsolete"
+        ? { ...proposal, resolution: "keep-current" as const }
+        : proposal
+    );
+    expect(computePostChangeTags(taggedNode.tags, kept).obsolete).toBe(
+      "legacy"
+    );
+  });
+
   it("accepts expanded names that are equivalent to the current name", () => {
     const proposals = buildTagProposals(
       {

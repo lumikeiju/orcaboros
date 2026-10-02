@@ -130,7 +130,8 @@ export function createCustomProfileForFeedIds(
       enabled: true,
       geometryTarget: "osm",
       streetNameCleanup: DEFAULT_STREET_NAME_CLEANUP,
-      additionalTags: []
+      additionalTags: [],
+      removeKeys: []
     })),
     mappingRules: [],
     candidateRadiusMeters: 50,

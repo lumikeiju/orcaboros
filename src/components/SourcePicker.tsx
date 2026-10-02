@@ -147,8 +147,8 @@ export function SourcePicker({
 
   return (
     <section className="panel" aria-labelledby="source-heading">
-      <h2 id="source-heading">Upload GTFS feed(s)</h2>
-      <p>Feed ID defaults to ZIP filename</p>
+      <h2 id="source-heading">Select local GTFS feed(s)</h2>
+      <p>Only stops.txt is read; each feed ID defaults to the ZIP filename.</p>
       <label
         className={`file-control file-drop-zone${
           isDragActive ? " is-dragging" : ""
@@ -159,7 +159,7 @@ export function SourcePicker({
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
       >
-        <span>Select or drop one or more GTFS feeds</span>
+        <span>Select or drop local GTFS ZIPs</span>
         <input
           id="gtfs-files"
           type="file"

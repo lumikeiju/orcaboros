@@ -21,19 +21,16 @@ describe("SourcePicker", () => {
     const file = new File(["not a real archive"], "US-WA-KCM.zip", {
       type: "application/zip"
     });
-    fireEvent.change(
-      screen.getByLabelText("Select or drop one or more GTFS feeds"),
-      {
-        target: { files: [file] }
-      }
-    );
+    fireEvent.change(screen.getByLabelText("Select or drop local GTFS ZIPs"), {
+      target: { files: [file] }
+    });
     expect(onSelected).toHaveBeenCalledWith(
       [{ file, sourceFeedId: "US-WA-KCM" }],
       []
     );
-    expect(
-      screen.getByLabelText("Select or drop one or more GTFS feeds")
-    ).toHaveValue("");
+    expect(screen.getByLabelText("Select or drop local GTFS ZIPs")).toHaveValue(
+      ""
+    );
   });
 
   it("accepts multiple ZIP archives dropped together", () => {

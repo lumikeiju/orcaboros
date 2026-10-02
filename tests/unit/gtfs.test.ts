@@ -5,6 +5,7 @@ import {
   locationKindForValue
 } from "../../src/domain/gtfs";
 import {
+  evaluateRemovalKeys,
   evaluateMappingRules,
   ProfileValidationError,
   validateMappingProfile
@@ -283,6 +284,73 @@ describe("GTFS stop eligibility", () => {
       key: stResult.stop.identityTag.key,
       value: stResult.stop.identityTag.value
     });
+  });
+
+  it("validates and scopes configured OSM key removals to their source feed", () => {
+    const profile = validateMappingProfile({
+      schemaVersion: 1,
+      id: "feed-specific-removals",
+      name: "Feed-specific removals",
+      version: "1.0.0",
+      sourceFeeds: [
+        {
+          id: "US-WA-KCM",
+          displayName: "King County Metro",
+          enabled: true,
+          removeKeys: ["old_ref", "old:source"]
+        },
+        {
+          id: "US-WA-ST",
+          displayName: "Sound Transit",
+          enabled: true,
+          removeKeys: ["obsolete"]
+        }
+      ],
+      mappingRules: [],
+      candidateRadiusMeters: 50,
+      autoIdRadiusMeters: 10
+    });
+    const kcmResult = createEligibleStop("US-WA-KCM", "King County Metro", {
+      rowNumber: 2,
+      fields
+    });
+    const stResult = createEligibleStop("US-WA-ST", "Sound Transit", {
+      rowNumber: 2,
+      fields
+    });
+    if (!("stop" in kcmResult) || !("stop" in stResult)) {
+      throw new Error("fixture stops are invalid");
+    }
+
+    expect(profile.sourceFeeds[0]?.removeKeys).toEqual([
+      "old_ref",
+      "old:source"
+    ]);
+    expect(evaluateRemovalKeys(profile, kcmResult.stop)).toEqual([
+      "old_ref",
+      "old:source"
+    ]);
+    expect(evaluateRemovalKeys(profile, stResult.stop)).toEqual(["obsolete"]);
+
+    expect(() =>
+      validateMappingProfile({
+        schemaVersion: 1,
+        id: "invalid-removal-key",
+        name: "Invalid removal key",
+        version: "1.0.0",
+        sourceFeeds: [
+          {
+            id: "US-WA-KCM",
+            displayName: "King County Metro",
+            enabled: true,
+            removeKeys: ["unsafe\u0000key"]
+          }
+        ],
+        mappingRules: [],
+        candidateRadiusMeters: 50,
+        autoIdRadiusMeters: 10
+      })
+    ).toThrow(ProfileValidationError);
   });
 
   it("migrates legacy global additional tags into their feed fields", () => {

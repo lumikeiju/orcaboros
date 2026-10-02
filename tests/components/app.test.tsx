@@ -12,25 +12,33 @@ describe("App workflow sidebar", () => {
     expect(screen.getByText(`v${packageMetadata.version}`)).toBeInTheDocument();
   });
 
+  it("shows the intro warning when the app loads", () => {
+    render(<App />);
+
+    expect(
+      screen.getByRole("alertdialog", { name: "Before you use Orcaboros" })
+    ).toBeInTheDocument();
+  });
+
   it("opens one workflow panel beneath its step and closes the previous panel", () => {
     render(<App />);
 
     const importStep = screen.getByRole("button", {
-      name: /1 Upload Load your GTFS feed\(s\)/
+      name: /1 Upload Import local GTFS ZIPs/
     });
     const profileStep = screen.getByRole("button", {
-      name: /2 Profile Configure matching and region/
+      name: /2 Profile Review field mappings \(optional\)/
     });
 
     expect(importStep).toHaveAttribute("aria-expanded", "true");
     expect(importStep).toHaveAttribute("aria-controls", "upload-step-panel");
-    expect(screen.getByText("Upload GTFS feed(s)")).toBeInTheDocument();
+    expect(screen.getByText("Select local GTFS feed(s)")).toBeInTheDocument();
 
     fireEvent.click(profileStep);
 
     expect(importStep).toHaveAttribute("aria-expanded", "false");
     expect(profileStep).toHaveAttribute("aria-expanded", "true");
-    expect(screen.queryByText("Upload GTFS feed(s)")).toBeNull();
+    expect(screen.queryByText("Select local GTFS feed(s)")).toBeNull();
     expect(screen.getByText("Mapping profile")).toBeInTheDocument();
     expect(screen.getByLabelText("Candidate radius (m)")).toBeInTheDocument();
     expect(screen.getByLabelText("Auto-match radius")).toBeInTheDocument();
@@ -46,7 +54,7 @@ describe("App workflow sidebar", () => {
 
     fireEvent.click(
       screen.getByRole("button", {
-        name: /3 Retrieve Get OSM data for comparison/
+        name: /3 Retrieve Retrieve nearby OSM data/
       })
     );
     expect(
@@ -54,7 +62,7 @@ describe("App workflow sidebar", () => {
     ).toBeInTheDocument();
 
     fireEvent.click(
-      screen.getByRole("button", { name: /4 Review Inspect discrepancies/ })
+      screen.getByRole("button", { name: /4 Review Review each feature/ })
     );
     expect(
       screen.getByText(/Import a feed and retrieve OSM candidates/i)
@@ -63,12 +71,33 @@ describe("App workflow sidebar", () => {
 
     fireEvent.click(
       screen.getByRole("button", {
-        name: /5 Export Save results and contribute/
+        name: /5 Export Download for JOSM/
       })
     );
     expect(
       screen.getByText(/Complete import, retrieval, and review/i)
     ).toBeInTheDocument();
+  });
+
+  it("shows step readiness without disabling out-of-order navigation", () => {
+    render(<App />);
+
+    expect(screen.getByText("Start here")).toBeInTheDocument();
+    expect(screen.getByText("Optional")).toBeInTheDocument();
+    expect(screen.getAllByText("Waiting")).toHaveLength(3);
+
+    fireEvent.change(screen.getByLabelText("Select or drop local GTFS ZIPs"), {
+      target: {
+        files: [new File(["one"], "US-WA-KCM.zip", { type: "application/zip" })]
+      }
+    });
+
+    expect(screen.getByText("Ready")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", {
+        name: /3 Retrieve Retrieve nearby OSM data/
+      })
+    ).not.toBeDisabled();
   });
 
   it("resizes the sidebar and review panel with keyboard controls", () => {
@@ -97,12 +126,36 @@ describe("App workflow sidebar", () => {
     expect(reviewHandle).toHaveAttribute("aria-valuenow", "55");
   });
 
+  it("shows the reset confirmation and restores focus when cancelled", () => {
+    render(<App />);
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "I have read these warnings — continue"
+      })
+    );
+    const resetButton = screen.getByRole("button", {
+      name: "Reset current session"
+    });
+    fireEvent.click(resetButton);
+
+    expect(
+      screen.getByRole("group", { name: /Reset this session\?/ })
+    ).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Keep current session" })
+    );
+
+    expect(
+      screen.queryByRole("group", { name: /Reset this session\?/ })
+    ).not.toBeInTheDocument();
+    expect(resetButton).toHaveFocus();
+  });
+
   it("uses the process label for selected feeds", () => {
     render(<App />);
 
-    const fileInput = screen.getByLabelText(
-      "Select or drop one or more GTFS feeds"
-    );
+    const fileInput = screen.getByLabelText("Select or drop local GTFS ZIPs");
     const importButton = screen.getByRole("button", {
       name: "Process selected feeds"
     });
@@ -130,19 +183,14 @@ describe("App workflow sidebar", () => {
   it("applies the matching feed profile when a known ID is selected", () => {
     render(<App />);
 
-    fireEvent.change(
-      screen.getByLabelText("Select or drop one or more GTFS feeds"),
-      {
-        target: {
-          files: [
-            new File(["one"], "US-WA-KCM.zip", { type: "application/zip" })
-          ]
-        }
+    fireEvent.change(screen.getByLabelText("Select or drop local GTFS ZIPs"), {
+      target: {
+        files: [new File(["one"], "US-WA-KCM.zip", { type: "application/zip" })]
       }
-    );
+    });
     fireEvent.click(
       screen.getByRole("button", {
-        name: /2 Profile Configure matching and region/
+        name: /2 Profile Review field mappings \(optional\)/
       })
     );
 
@@ -156,19 +204,14 @@ describe("App workflow sidebar", () => {
   it("uses an editable custom profile for an unknown feed ID", () => {
     render(<App />);
 
-    fireEvent.change(
-      screen.getByLabelText("Select or drop one or more GTFS feeds"),
-      {
-        target: {
-          files: [
-            new File(["one"], "US-WA-NEW.zip", { type: "application/zip" })
-          ]
-        }
+    fireEvent.change(screen.getByLabelText("Select or drop local GTFS ZIPs"), {
+      target: {
+        files: [new File(["one"], "US-WA-NEW.zip", { type: "application/zip" })]
       }
-    );
+    });
     fireEvent.click(
       screen.getByRole("button", {
-        name: /2 Profile Configure matching and region/
+        name: /2 Profile Review field mappings \(optional\)/
       })
     );
 

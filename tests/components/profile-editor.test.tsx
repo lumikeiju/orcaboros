@@ -262,6 +262,85 @@ describe("ProfileEditor", () => {
     );
   });
 
+  it("keeps OSM key removal rules inside their feed card", () => {
+    const profile = getProfileForFeedIds(["US-WA-KCM", "US-WA-ST"]);
+    if (profile === undefined) {
+      throw new Error("combined fixture profile is missing");
+    }
+    const onChange = vi.fn();
+    render(
+      <ProfileEditor
+        profile={profile}
+        uploadedFeedIds={["US-WA-KCM", "US-WA-ST"]}
+        onChange={onChange}
+        onReset={vi.fn()}
+      />
+    );
+
+    const addButtons = screen.getAllByRole("button", {
+      name: "Add OSM key to remove"
+    });
+    expect(addButtons).toHaveLength(2);
+    fireEvent.click(addButtons[1]);
+
+    expect(onChange).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        sourceFeeds: [
+          expect.objectContaining({
+            id: "US-WA-KCM",
+            removeKeys: []
+          }),
+          expect.objectContaining({
+            id: "US-WA-ST",
+            removeKeys: [""]
+          })
+        ]
+      })
+    );
+  });
+
+  it("edits and removes configured OSM keys", () => {
+    const profile = getProfileForFeedId("US-WA-KCM");
+    if (profile === undefined) {
+      throw new Error("stock fixture profile is missing");
+    }
+    const profileWithRemoval = {
+      ...profile,
+      sourceFeeds: profile.sourceFeeds.map((sourceFeed) => ({
+        ...sourceFeed,
+        removeKeys: ["obsolete:tag"]
+      }))
+    };
+    const onChange = vi.fn();
+    render(
+      <ProfileEditor
+        profile={profileWithRemoval}
+        onChange={onChange}
+        onReset={vi.fn()}
+      />
+    );
+
+    fireEvent.change(screen.getByLabelText("OSM tag key to remove"), {
+      target: { value: "old:tag" }
+    });
+    expect(onChange).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        sourceFeeds: [expect.objectContaining({ removeKeys: ["old:tag"] })]
+      })
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: 'Remove OSM key "obsolete:tag"'
+      })
+    );
+    expect(onChange).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        sourceFeeds: [expect.objectContaining({ removeKeys: [] })]
+      })
+    );
+  });
+
   it("edits both the key and value of a constant OSM tag", () => {
     const profile = getProfileForFeedId("US-WA-KCM");
     if (profile === undefined) {

@@ -1,4 +1,5 @@
 import { type ReactElement, useEffect, useRef, useState } from "react";
+import maplibreWorkerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
 import type {
   GeoJSONSource,
   Map as MapLibreMap,
@@ -817,6 +818,7 @@ export function MapView({
       if (disposed || container.current === null) {
         return;
       }
+      module.setWorkerUrl(maplibreWorkerUrl);
       const instance = new module.Map({
         container: container.current,
         style: resolvedStyleUrl,

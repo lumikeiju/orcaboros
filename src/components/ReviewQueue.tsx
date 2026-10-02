@@ -1,12 +1,4 @@
-import {
-  type KeyboardEvent,
-  type MouseEvent,
-  type ReactElement,
-  useEffect,
-  useMemo,
-  useRef,
-  useState
-} from "react";
+import { type ReactElement, useEffect, useMemo, useRef, useState } from "react";
 import { CandidateMatch, InitialMatch } from "../domain/matching";
 import { EligibleStop } from "../domain/gtfs";
 import { elementKey, isOsmWay, OsmElement, OsmElementRef } from "../domain/osm";
@@ -154,7 +146,7 @@ export function ReviewQueue({
     exact: false
   });
   const [page, setPage] = useState(1);
-  const focusedCardRef = useRef<HTMLLIElement>(null);
+  const focusedCardRef = useRef<HTMLButtonElement>(null);
 
   const items = useMemo<readonly ReviewQueueItem[]>(() => {
     const stopItems = stops.map((stop): StopReviewItem => {
@@ -263,35 +255,6 @@ export function ReviewQueue({
     }));
   }
 
-  function handleCardClick(
-    event: MouseEvent<HTMLLIElement>,
-    featureId: string
-  ): void {
-    const target = event.target;
-    if (
-      target instanceof HTMLElement &&
-      target.closest("button, input, label, select, textarea, summary, a") !==
-        null
-    ) {
-      return;
-    }
-    event.currentTarget.focus();
-    onFocusFeature(featureId);
-  }
-
-  function handleCardKeyDown(
-    event: KeyboardEvent<HTMLLIElement>,
-    featureId: string
-  ): void {
-    if (event.target !== event.currentTarget) {
-      return;
-    }
-    if (event.key === "Enter" || event.key === " ") {
-      event.preventDefault();
-      onFocusFeature(featureId);
-    }
-  }
-
   function handleDecisionAction(featureId: string, action: ReviewAction): void {
     onAction(featureId, action);
     const currentIndex = visibleItems.findIndex(
@@ -311,13 +274,6 @@ export function ReviewQueue({
         className={`review-card${
           focusedFeatureId === stop.featureId ? " is-focused" : ""
         }`}
-        role="button"
-        tabIndex={0}
-        ref={focusedFeatureId === stop.featureId ? focusedCardRef : undefined}
-        aria-label={`Focus ${stop.stopNameExpanded} on the map`}
-        aria-pressed={focusedFeatureId === stop.featureId}
-        onClick={(event) => handleCardClick(event, stop.featureId)}
-        onKeyDown={(event) => handleCardKeyDown(event, stop.featureId)}
       >
         <div className="review-card-heading">
           <div>
@@ -333,6 +289,20 @@ export function ReviewQueue({
             <span className={`state state-${review?.state ?? "unreviewed"}`}>
               {review?.state ?? "unreviewed"}
             </span>
+            <button
+              ref={
+                focusedFeatureId === stop.featureId ? focusedCardRef : undefined
+              }
+              type="button"
+              className={`review-card-focus secondary${
+                focusedFeatureId === stop.featureId ? " is-focused" : ""
+              }`}
+              aria-label={`Focus ${stop.stopNameExpanded} on the map`}
+              aria-pressed={focusedFeatureId === stop.featureId}
+              onClick={() => onFocusFeature(stop.featureId)}
+            >
+              Locate on map
+            </button>
           </div>
         </div>
         {result?.kind === "auto-matched" && (
@@ -457,13 +427,6 @@ export function ReviewQueue({
         className={`review-card review-card-removed${
           focusedFeatureId === featureId ? " is-focused" : ""
         }`}
-        role="button"
-        tabIndex={0}
-        ref={focusedFeatureId === featureId ? focusedCardRef : undefined}
-        aria-label={`Focus OSM ${elementLabel} ${item.node.id} on the map`}
-        aria-pressed={focusedFeatureId === featureId}
-        onClick={(event) => handleCardClick(event, featureId)}
-        onKeyDown={(event) => handleCardKeyDown(event, featureId)}
       >
         <div className="review-card-heading">
           <div>
@@ -474,7 +437,21 @@ export function ReviewQueue({
               {item.node.latitude.toFixed(5)}, {item.node.longitude.toFixed(5)}
             </p>
           </div>
-          <span className="category category-removed">removed</span>
+          <div className="review-card-states">
+            <span className="category category-removed">removed</span>
+            <button
+              ref={focusedFeatureId === featureId ? focusedCardRef : undefined}
+              type="button"
+              className={`review-card-focus secondary${
+                focusedFeatureId === featureId ? " is-focused" : ""
+              }`}
+              aria-label={`Focus OSM ${elementLabel} ${item.node.id} on the map`}
+              aria-pressed={focusedFeatureId === featureId}
+              onClick={() => onFocusFeature(featureId)}
+            >
+              Locate on map
+            </button>
+          </div>
         </div>
         <p>This OSM identity is not present in the imported GTFS data.</p>
         <ul>
@@ -575,6 +552,9 @@ export function ReviewQueue({
         proposedValue
       ])
     );
+    const tagProposals = new Map(
+      (review?.proposals ?? []).map((proposal) => [proposal.key, proposal])
+    );
     const osmTags = candidate?.node.tags ?? {};
     const tagRows = [
       ...new Set([...proposedTags.keys(), ...Object.keys(osmTags)])
@@ -595,10 +575,17 @@ export function ReviewQueue({
       return gtfsValue === osmValue ? "none" : "both";
     };
     const highlightComparedTags = (
+      key: string,
       gtfsValue: string | undefined,
       osmValue: string | undefined
     ): DiffHighlight => {
-      if (gtfsValue === undefined || gtfsValue === osmValue) {
+      if (gtfsValue === undefined) {
+        return osmValue !== undefined &&
+          tagProposals.get(key)?.resolution === "remove"
+          ? "remove"
+          : "none";
+      }
+      if (gtfsValue === osmValue) {
         return "none";
       }
       return osmValue === undefined ? "add" : "both";
@@ -642,7 +629,7 @@ export function ReviewQueue({
                   gtfsValue={gtfsValue ?? "(not proposed)"}
                   osmLabel={key}
                   osmValue={osmValue ?? "(missing)"}
-                  highlight={highlightComparedTags(gtfsValue, osmValue)}
+                  highlight={highlightComparedTags(key, gtfsValue, osmValue)}
                 />
               ))}
               <ReviewDiffRow
@@ -710,7 +697,7 @@ export function ReviewQueue({
             handleDecisionAction(item.stop.featureId, { type: "skip" })
           }
         >
-          Reject
+          Skip feature
         </button>
         <button
           type="button"
@@ -723,7 +710,7 @@ export function ReviewQueue({
             })
           }
         >
-          Modify
+          Create separate node
         </button>
       </div>
     );

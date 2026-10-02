@@ -6,6 +6,8 @@ Orcaboros is a private, browser-first tool for reviewing conflation between loca
 
 Release 1 is an active pre-release (`0.1.0`). The application is intentionally backendless and does not upload edits to OpenStreetMap.
 
+On each fresh app load, an intro warning reminds users to review every proposed change, follow the [OSM Automated Edits Code of Conduct](https://wiki.openstreetmap.org/wiki/Automated_Edits_code_of_conduct) when applicable, and confirm that each GTFS feed's license permits contributing derived data to OSM under the ODbL.
+
 ## Prerequisites
 
 - [Bun](https://bun.sh/) 1.3.14 or newer
@@ -19,6 +21,8 @@ bun run dev
 ```
 
 Open the local Vite URL in a browser. Feed archives can be selected together from the local file picker or dragged onto the archive drop area; unsupported ZIPs remain visible with a warning and are skipped during import. No remote GTFS source is supported. Stock mapping profiles are defined per feed in [`src/profiles/`](src/profiles/).
+
+The desktop workflow guides you through selecting local feeds, optionally reviewing their mapping profile, retrieving nearby OSM data, reviewing each proposed decision, and downloading a JOSM-compatible change file. You can open workflow steps out of order; their status labels indicate what is ready or waiting. Resetting a session requires confirmation.
 
 After OSM retrieval, the Review Queue shows review results in pages. New GTFS stops, removed OSM identities, and moved stops are shown by default; exact stop ID matches are available through the filter controls. Selecting a feature marker on the map focuses the matching item in the Review Queue, and selecting a queue item focuses it on the map.
 

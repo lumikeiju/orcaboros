@@ -14,6 +14,7 @@ import { ReviewQueue } from "./components/ReviewQueue";
 import { MapView } from "./components/MapView";
 import { ThemeToggle, type Theme } from "./components/ThemeToggle";
 import { ResizeHandle } from "./components/ResizeHandle";
+import { IntroWarning } from "./components/IntroWarning";
 import {
   OsmRequestResult,
   type OsmRequestResultState
@@ -24,7 +25,7 @@ import {
   getDefaultProfile,
   getProfileForFeedIds
 } from "./profiles";
-import { MappingProfile } from "./domain/profile";
+import { evaluateRemovalKeys, MappingProfile } from "./domain/profile";
 import {
   applyStreetNameCleanup,
   EligibleStop,
@@ -110,6 +111,18 @@ type OsmProgressState = {
 };
 
 type WorkflowStepId = "upload" | "profile" | "retrieve" | "review" | "export";
+type WorkflowStepStatusKind =
+  | "attention"
+  | "complete"
+  | "optional"
+  | "progress"
+  | "ready"
+  | "start"
+  | "waiting";
+type WorkflowStepStatus = {
+  label: string;
+  kind: WorkflowStepStatusKind;
+};
 
 const MIN_RAIL_WIDTH = 18;
 const MAX_RAIL_WIDTH = 36;
@@ -192,6 +205,8 @@ export function App(): ReactElement {
   const [error, setError] = useState<string | undefined>();
   const [exportError, setExportError] = useState<string | undefined>();
   const [loading, setLoading] = useState(false);
+  const [resetConfirmationOpen, setResetConfirmationOpen] = useState(false);
+  const resetSessionButtonRef = useRef<HTMLButtonElement>(null);
   const [importActive, setImportActive] = useState(false);
   const [importProgress, setImportProgress] = useState<ImportProgressState>();
   const activeImportHandle = useRef<ImportWorkerHandle | null>(null);
@@ -601,7 +616,14 @@ export function App(): ReactElement {
                   validStopIds
                 );
           const removeKeys =
-            node === undefined ? [] : legacyIdentityKeys(node, stop);
+            node === undefined
+              ? []
+              : [
+                  ...new Set([
+                    ...legacyIdentityKeys(node, stop),
+                    ...evaluateRemovalKeys(profile, stop)
+                  ])
+                ];
           return [
             stop.featureId,
             {
@@ -693,7 +715,14 @@ export function App(): ReactElement {
               validStopIds
             );
       const removeKeys =
-        node === undefined ? [] : legacyIdentityKeys(node, stop);
+        node === undefined
+          ? []
+          : [
+              ...new Set([
+                ...legacyIdentityKeys(node, stop),
+                ...evaluateRemovalKeys(profile, stop)
+              ])
+            ];
       updated = {
         ...updated,
         proposals: buildTagProposals(
@@ -820,7 +849,10 @@ export function App(): ReactElement {
         [...new Set(stops.map((candidate) => candidate.sourceFeedId))],
         validStopIds
       );
-      const removeKeys = legacyIdentityKeys(element, stop);
+      const legacyRemoveKeys = legacyIdentityKeys(element, stop);
+      const removeKeys = [
+        ...new Set([...legacyRemoveKeys, ...evaluateRemovalKeys(profile, stop)])
+      ];
       const mapping = outputMapping(profile, stop);
       const proposals = refreshTagProposals(
         review.proposals,
@@ -832,7 +864,7 @@ export function App(): ReactElement {
       );
       const tags = removeTags(
         computePostChangeTags(existing?.tags ?? element.tags, proposals),
-        removeKeys
+        legacyRemoveKeys
       );
       modifications.set(elementKey(element), {
         node: element,
@@ -879,7 +911,8 @@ export function App(): ReactElement {
     }
   }
 
-  async function resetSession(): Promise<void> {
+  async function resetSession(): Promise<boolean> {
+    setLoading(true);
     try {
       activeImportHandle.current?.cancel();
       await repository.resetActiveSession();
@@ -901,14 +934,31 @@ export function App(): ReactElement {
       setOsmRequestActive(false);
       setOsmProgress(undefined);
       setOsmRequestResult(undefined);
+      setExportError(undefined);
       setError(undefined);
       setStatus("Session reset. Select local feeds to begin.");
+      setResetConfirmationOpen(false);
+      return true;
     } catch (caught: unknown) {
       setError(
         caught instanceof Error
           ? caught.message
           : "The active session could not be reset."
       );
+      return false;
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function cancelSessionReset(): void {
+    setResetConfirmationOpen(false);
+    resetSessionButtonRef.current?.focus();
+  }
+
+  async function confirmSessionReset(): Promise<void> {
+    if (await resetSession()) {
+      document.getElementById("gtfs-files")?.focus();
     }
   }
 
@@ -974,11 +1024,9 @@ export function App(): ReactElement {
       review.state === "create-selected"
   ).length;
 
-  const exportBlocked =
-    !retrievalComplete || nodes.length === 0 || exportableDecisionCount === 0;
+  const exportBlocked = !retrievalComplete || exportableDecisionCount === 0;
 
-  const currentWorkflowStep =
-    openWorkflowStep === undefined ? "upload" : openWorkflowStep;
+  const currentWorkflowStep = openWorkflowStep ?? "upload";
   const workflowSteps: readonly {
     id: WorkflowStepId;
     number: string;
@@ -989,31 +1037,31 @@ export function App(): ReactElement {
       id: "upload",
       number: "1",
       label: "Upload",
-      detail: "Load your GTFS feed(s)"
+      detail: "Import local GTFS ZIPs"
     },
     {
       id: "profile",
       number: "2",
       label: "Profile",
-      detail: "Configure matching and region"
+      detail: "Review field mappings (optional)"
     },
     {
       id: "retrieve",
       number: "3",
       label: "Retrieve",
-      detail: "Get OSM data for comparison"
+      detail: "Retrieve nearby OSM data"
     },
     {
       id: "review",
       number: "4",
       label: "Review",
-      detail: "Inspect discrepancies"
+      detail: "Review each feature"
     },
     {
       id: "export",
       number: "5",
       label: "Export",
-      detail: "Save results and contribute"
+      detail: "Download for JOSM"
     }
   ] as const;
 
@@ -1027,6 +1075,71 @@ export function App(): ReactElement {
     reviews,
     validStopIds
   });
+
+  const hasImportedStops = feedSummaries.length > 0 && stops.length > 0;
+  const allReviewItemsResolved =
+    conflationProgress.total > 0 &&
+    conflationProgress.resolved === conflationProgress.total;
+  const workflowStepStatuses: Readonly<
+    Record<WorkflowStepId, WorkflowStepStatus>
+  > = {
+    upload: importActive
+      ? { label: "Importing", kind: "progress" }
+      : feedSummaries.length > 0
+        ? stops.length > 0
+          ? { label: "Imported", kind: "complete" }
+          : { label: "Check import", kind: "attention" }
+        : archives.length > 0
+          ? selectionErrors.length > 0
+            ? { label: "Fix selection", kind: "attention" }
+            : { label: "Ready", kind: "ready" }
+          : { label: "Start here", kind: "start" },
+    profile: { label: "Optional", kind: "optional" },
+    retrieve: retrievalComplete
+      ? { label: "Retrieved", kind: "complete" }
+      : osmRequestActive
+        ? { label: "Retrieving", kind: "progress" }
+        : hasImportedStops
+          ? { label: "Ready", kind: "ready" }
+          : { label: "Waiting", kind: "waiting" },
+    review: !retrievalComplete
+      ? { label: "Waiting", kind: "waiting" }
+      : conflationProgress.total === 0
+        ? { label: "No items", kind: "attention" }
+        : allReviewItemsResolved
+          ? { label: "Complete", kind: "complete" }
+          : conflationProgress.resolved > 0
+            ? {
+                label: `${conflationProgress.resolved}/${conflationProgress.total}`,
+                kind: "progress"
+              }
+            : { label: "Ready", kind: "ready" },
+    export: !retrievalComplete
+      ? { label: "Waiting", kind: "waiting" }
+      : exportBlocked
+        ? { label: "Needs decisions", kind: "waiting" }
+        : { label: "Ready", kind: "ready" }
+  };
+
+  function navigateToWorkflowStep(stepId: WorkflowStepId): void {
+    setOpenWorkflowStep(stepId);
+    document.getElementById(`workflow-step-${stepId}`)?.focus();
+  }
+
+  function openReviewQueue(): void {
+    setFocusedFeatureId(
+      firstUndecidedFeatureId({
+        stops,
+        nodes,
+        reviews,
+        validStopIds
+      })
+    );
+    navigateToWorkflowStep("review");
+    document
+      .getElementById("review-step")
+      ?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
 
   function renderWorkflowContent(stepId: WorkflowStepId): ReactElement {
     switch (stepId) {
@@ -1095,13 +1208,46 @@ export function App(): ReactElement {
                       : "Process selected feeds"}
                 </button>
                 <button
+                  ref={resetSessionButtonRef}
                   type="button"
                   className="secondary"
-                  onClick={() => void resetSession()}
+                  aria-expanded={resetConfirmationOpen}
+                  aria-controls="reset-confirmation"
+                  onClick={() => setResetConfirmationOpen(true)}
                   disabled={loading}
                 >
                   Reset current session
                 </button>
+              </div>
+              <div
+                id="reset-confirmation"
+                className="reset-confirmation"
+                role="group"
+                aria-labelledby="reset-confirmation-heading"
+                hidden={!resetConfirmationOpen}
+              >
+                <p id="reset-confirmation-heading">
+                  Reset this session? Imported stops, OSM candidates, and review
+                  decisions stored in this browser will be cleared.
+                </p>
+                <div className="button-row">
+                  <button
+                    type="button"
+                    className="secondary"
+                    onClick={cancelSessionReset}
+                    disabled={loading}
+                  >
+                    Keep current session
+                  </button>
+                  <button
+                    type="button"
+                    className="reset-confirmation-delete"
+                    onClick={() => void confirmSessionReset()}
+                    disabled={loading}
+                  >
+                    {loading ? "Resetting…" : "Reset session"}
+                  </button>
+                </div>
               </div>
               {error !== undefined && (
                 <p className="error" role="alert">
@@ -1135,6 +1281,15 @@ export function App(): ReactElement {
                   ))}
                 </div>
               )}
+              {hasImportedStops && (
+                <button
+                  type="button"
+                  className="workflow-next-step"
+                  onClick={() => navigateToWorkflowStep("retrieve")}
+                >
+                  Continue to OSM retrieval
+                </button>
+              )}
             </section>
           </div>
         );
@@ -1167,6 +1322,15 @@ export function App(): ReactElement {
               onChange={(nextProfile) => void handleProfileChange(nextProfile)}
               onReset={() => void handleProfileChange(getDefaultProfile())}
             />
+            {hasImportedStops && (
+              <button
+                type="button"
+                className="workflow-next-step"
+                onClick={() => navigateToWorkflowStep("retrieve")}
+              >
+                Continue to OSM retrieval
+              </button>
+            )}
           </div>
         );
       case "retrieve":
@@ -1237,6 +1401,15 @@ export function App(): ReactElement {
                 {osmRequestResult !== undefined && (
                   <OsmRequestResult result={osmRequestResult} />
                 )}
+                {retrievalComplete && (
+                  <button
+                    type="button"
+                    className="workflow-next-step"
+                    onClick={openReviewQueue}
+                  >
+                    Continue to review
+                  </button>
+                )}
                 <button
                   type="button"
                   className="secondary"
@@ -1278,19 +1451,7 @@ export function App(): ReactElement {
                 <button
                   type="button"
                   className="secondary"
-                  onClick={() => {
-                    setFocusedFeatureId(
-                      firstUndecidedFeatureId({
-                        stops,
-                        nodes,
-                        reviews,
-                        validStopIds
-                      })
-                    );
-                    document
-                      .getElementById("review-step")
-                      ?.scrollIntoView({ behavior: "smooth", block: "start" });
-                  }}
+                  onClick={openReviewQueue}
                 >
                   Open review queue
                 </button>
@@ -1384,6 +1545,7 @@ export function App(): ReactElement {
             {workflowSteps.map((step) => {
               const isOpen = openWorkflowStep === step.id;
               const panelId = `${step.id}-step-panel`;
+              const stepStatus = workflowStepStatuses[step.id];
               return (
                 <section
                   className={`workflow-step${isOpen ? " is-open" : ""}`}
@@ -1395,7 +1557,7 @@ export function App(): ReactElement {
                       currentWorkflowStep === step.id ? " is-active" : ""
                     }`}
                     type="button"
-                    aria-label={`${step.number} ${step.label} ${step.detail}`}
+                    aria-label={`${step.number} ${step.label} ${step.detail}. ${stepStatus.label}`}
                     aria-current={
                       currentWorkflowStep === step.id ? "step" : undefined
                     }
@@ -1408,9 +1570,14 @@ export function App(): ReactElement {
                     }
                   >
                     <span className="workflow-step-number">{step.number}</span>
-                    <span>
+                    <span className="workflow-step-copy">
                       <strong>{step.label}</strong>
                       <small>{step.detail}</small>
+                    </span>
+                    <span
+                      className={`workflow-step-status is-${stepStatus.kind}`}
+                    >
+                      {stepStatus.label}
                     </span>
                     <span className="workflow-step-chevron" aria-hidden="true">
                       {isOpen ? "−" : "+"}
@@ -1421,12 +1588,16 @@ export function App(): ReactElement {
               );
             })}
           </nav>
-          <div className="progress-rail" aria-label="Workflow progress">
+          <div
+            className="progress-rail"
+            role="group"
+            aria-label="Review progress"
+          >
             <ProgressRing
               resolved={conflationProgress.resolved}
               total={conflationProgress.total}
             />
-            <strong>Progress</strong>
+            <strong>Review progress</strong>
             <small>{nodes.length > 0 ? "Review in progress" : status}</small>
           </div>
         </aside>
@@ -1514,6 +1685,9 @@ export function App(): ReactElement {
           )}
         </section>
       </div>
+      <IntroWarning
+        onContinue={() => document.getElementById("gtfs-files")?.focus()}
+      />
     </main>
   );
 }

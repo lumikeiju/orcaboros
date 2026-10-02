@@ -252,6 +252,47 @@ export function ProfileEditor({
     });
   }
 
+  function updateRemoveKeys(
+    sourceFeedId: string,
+    update: (keys: readonly string[]) => readonly string[]
+  ): void {
+    onChange({
+      ...profile,
+      sourceFeeds: profile.sourceFeeds.map((sourceFeed) =>
+        sourceFeed.id === sourceFeedId
+          ? { ...sourceFeed, removeKeys: update(sourceFeed.removeKeys ?? []) }
+          : sourceFeed
+      )
+    });
+  }
+
+  function updateRemoveKey(
+    sourceFeedId: string,
+    index: number,
+    key: string
+  ): void {
+    const nextKey = key.trim();
+    updateRemoveKeys(sourceFeedId, (keys) => {
+      const removeKeys = [...keys];
+      if (nextKey.length === 0) {
+        removeKeys.splice(index, 1);
+      } else if (removeKeys[index] !== undefined) {
+        removeKeys[index] = nextKey;
+      }
+      return removeKeys;
+    });
+  }
+
+  function removeOsmKey(sourceFeedId: string, index: number): void {
+    updateRemoveKeys(sourceFeedId, (keys) =>
+      keys.filter((_key, keyIndex) => keyIndex !== index)
+    );
+  }
+
+  function addOsmKeyToRemove(sourceFeedId: string): void {
+    updateRemoveKeys(sourceFeedId, (keys) => [...keys, ""]);
+  }
+
   function updateAdditionalRuleKey(
     sourceFeedId: string,
     index: number,
@@ -392,6 +433,7 @@ export function ProfileEditor({
           const geometryTarget =
             sourceFeed.geometryTarget ?? DEFAULT_GEOMETRY_TARGET;
           const additionalTags = sourceFeed.additionalTags ?? [];
+          const removeKeys = sourceFeed.removeKeys ?? [];
           return (
             <details className="profile-feed-section" key={sourceFeed.id} open>
               <summary>
@@ -683,6 +725,103 @@ export function ProfileEditor({
                       <path d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6V5Z" />
                     </svg>
                     Add OSM tag
+                  </button>
+                </div>
+              </fieldset>
+              <fieldset>
+                <legend>OSM keys to remove</legend>
+                <p className="workflow-step-hint">
+                  Matching OSM elements will propose removing these keys for
+                  review. New elements are unaffected.
+                </p>
+                {removeKeys.length === 0 ? (
+                  <p className="workflow-step-hint">
+                    No OSM keys are configured for removal.
+                  </p>
+                ) : (
+                  <table className="mapping-table">
+                    <caption className="visually-hidden">
+                      OpenStreetMap tag keys to remove for{" "}
+                      {sourceFeed.displayName}
+                    </caption>
+                    <thead>
+                      <tr>
+                        <th scope="col">OSM tag key</th>
+                        <th
+                          scope="col"
+                          className="mapping-table-actions"
+                          aria-label="Actions"
+                        >
+                          <span className="visually-hidden">Actions</span>
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {removeKeys.map((key, index) => {
+                        const inputLabel =
+                          visibleFeedSections.length === 1
+                            ? "OSM tag key to remove"
+                            : `OSM tag key to remove for ${sourceFeed.id}`;
+                        const removeLabel = `Remove OSM key ${
+                          key.length > 0
+                            ? JSON.stringify(key)
+                            : `at row ${index + 1}`
+                        }`;
+                        return (
+                          <tr key={`${key}-${index}`}>
+                            <td>
+                              <input
+                                type="text"
+                                value={key}
+                                aria-label={inputLabel}
+                                onChange={(event) =>
+                                  updateRemoveKey(
+                                    sourceFeed.id,
+                                    index,
+                                    event.target.value
+                                  )
+                                }
+                              />
+                            </td>
+                            <td className="mapping-table-actions">
+                              <button
+                                type="button"
+                                className="icon-button secondary"
+                                aria-label={removeLabel}
+                                title={removeLabel}
+                                onClick={() =>
+                                  removeOsmKey(sourceFeed.id, index)
+                                }
+                              >
+                                <svg
+                                  aria-hidden="true"
+                                  viewBox="0 0 24 24"
+                                  focusable="false"
+                                >
+                                  <path d="M9 3h6l1 2h4v2H4V5h4l1-2Zm-3 6h12l-1 12H7L6 9Zm4 2v8h2v-8h-2Zm4 0v8h2v-8h-2Z" />
+                                </svg>
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                )}
+                <div className="mapping-actions">
+                  <button
+                    type="button"
+                    className="secondary"
+                    onClick={() => addOsmKeyToRemove(sourceFeed.id)}
+                  >
+                    <svg
+                      aria-hidden="true"
+                      viewBox="0 0 24 24"
+                      focusable="false"
+                    >
+                      <path d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6V5Z" />
+                    </svg>
+                    Add OSM key to remove
                   </button>
                 </div>
               </fieldset>
