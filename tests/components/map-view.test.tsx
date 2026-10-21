@@ -9,13 +9,14 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createMapPopupContent,
+  getFocusedCandidateNodeHighlights,
   getRelatedFeatureIdForOsmElement,
   MapLegend,
   MapView
 } from "../../src/components/MapView";
 import type { EligibleStop } from "../../src/domain/gtfs";
 import type { CandidateMatch, InitialMatch } from "../../src/domain/matching";
-import type { OsmNode } from "../../src/domain/osm";
+import { elementKey, type OsmNode } from "../../src/domain/osm";
 import type { FeatureReview } from "../../src/domain/review";
 
 const maplibreState = vi.hoisted(() => ({
@@ -24,6 +25,7 @@ const maplibreState = vi.hoisted(() => ({
     layers: string[];
     emitClick: (layerId: string, id: string) => void;
   }>,
+  sourceData: new globalThis.Map<string, unknown>(),
   workerUrls: [] as string[],
   popups: [] as Array<{
     content: HTMLElement | undefined;
@@ -41,7 +43,7 @@ vi.mock("maplibre-gl", () => {
     }> = [];
     private readonly sources = new globalThis.Map<
       string,
-      { type: "geojson"; setData: () => void }
+      { type: "geojson"; setData: (data: unknown) => void }
     >();
 
     constructor() {
@@ -93,8 +95,14 @@ vi.mock("maplibre-gl", () => {
 
     addImage(): void {}
 
-    addSource(id: string): void {
-      this.sources.set(id, { type: "geojson", setData: () => undefined });
+    addSource(id: string, source: { data: unknown }): void {
+      this.sources.set(id, {
+        type: "geojson",
+        setData: (data: unknown) => {
+          maplibreState.sourceData.set(id, data);
+        }
+      });
+      maplibreState.sourceData.set(id, source.data);
     }
 
     getSource(id: string) {
@@ -164,6 +172,7 @@ afterEach(() => {
   cleanup();
   maplibreState.calls.length = 0;
   maplibreState.maps.length = 0;
+  maplibreState.sourceData.clear();
   maplibreState.workerUrls.length = 0;
   maplibreState.popups.length = 0;
 });
@@ -183,10 +192,10 @@ const stop: EligibleStop = {
   identityTag: { key: "gtfs:stop_id:US-WA-KCM", value: "23" }
 };
 
-function candidateFor(node: OsmNode): CandidateMatch {
+function candidateFor(node: OsmNode, distanceMeters = 4): CandidateMatch {
   return {
     node,
-    distanceMeters: 4,
+    distanceMeters,
     evidence: [],
     exactIdentity: false,
     expandedNameEqual: false
@@ -226,6 +235,9 @@ describe("MapLegend", () => {
     expect(toggle).toHaveAttribute("aria-expanded", "true");
     expect(toggle).toHaveAttribute("aria-controls", "map-legend-items");
     expect(items).not.toHaveAttribute("hidden");
+    expect(screen.getByText("Focused stop / closest candidate")).toBeVisible();
+    expect(screen.getByText("Alternative candidates (2+)")).toBeVisible();
+    expect(screen.getByText("Focused stop-to-candidate link")).toBeVisible();
 
     fireEvent.click(toggle);
 
@@ -252,6 +264,143 @@ describe("MapView feature interactions", () => {
     expect(maplibreState.workerUrls).toHaveLength(1);
     expect(maplibreState.workerUrls[0]).not.toBe("");
     expect(maplibreState.calls.slice(0, 2)).toEqual(["worker-url", "map"]);
+    await waitFor(() =>
+      expect(maplibreState.maps[0]?.layers).toEqual(
+        expect.arrayContaining([
+          "map-focus-candidates-primary",
+          "map-focus-candidates-alternative",
+          "map-focus-markers"
+        ])
+      )
+    );
+  });
+
+  it("uses one highlight for the nearest candidate and another for alternatives", () => {
+    const nearest = {
+      id: 51,
+      version: 1,
+      latitude: 48.015,
+      longitude: -122.201,
+      tags: {}
+    };
+    const second = {
+      id: 52,
+      version: 1,
+      latitude: 48.016,
+      longitude: -122.202,
+      tags: {}
+    };
+    const third = {
+      id: 53,
+      version: 1,
+      latitude: 48.017,
+      longitude: -122.203,
+      tags: {}
+    };
+    const matches = new Map<string, InitialMatch>([
+      [
+        stop.featureId,
+        {
+          kind: "review",
+          candidates: [
+            candidateFor(third, 8),
+            candidateFor(nearest, 2),
+            candidateFor(second, 5)
+          ]
+        }
+      ]
+    ]);
+
+    const highlights = getFocusedCandidateNodeHighlights(
+      stop.featureId,
+      matches,
+      new Map<string, FeatureReview>()
+    );
+
+    expect(highlights.size).toBe(3);
+    expect(highlights.get(elementKey(nearest))).toBe("primary");
+    expect(highlights.get(elementKey(second))).toBe("alternative");
+    expect(highlights.get(elementKey(third))).toBe("alternative");
+  });
+
+  it("connects the focused GTFS stop to its primary OSM candidate", async () => {
+    const farther: OsmNode = {
+      id: 54,
+      version: 1,
+      latitude: 48.016,
+      longitude: -122.202,
+      tags: {}
+    };
+    const nearest: OsmNode = {
+      id: 55,
+      version: 1,
+      latitude: 48.015,
+      longitude: -122.201,
+      tags: {}
+    };
+    const matches = new Map<string, InitialMatch>([
+      [
+        stop.featureId,
+        {
+          kind: "review",
+          candidates: [candidateFor(farther, 8), candidateFor(nearest, 2)]
+        }
+      ]
+    ]);
+    const stops = [stop];
+    const nodes = [farther, nearest];
+    const { rerender } = render(
+      <MapView
+        nodes={nodes}
+        stops={stops}
+        matches={matches}
+        focusedFeatureId={stop.featureId}
+      />
+    );
+
+    await waitFor(() =>
+      expect(maplibreState.maps[0]?.layers).toEqual(
+        expect.arrayContaining([
+          "map-match-connection-casing",
+          "map-match-connection",
+          "osm-candidates"
+        ])
+      )
+    );
+
+    const map = maplibreState.maps[0];
+    if (map === undefined) {
+      throw new Error("MapLibre map was not created");
+    }
+    expect(map.layers.indexOf("map-match-connection")).toBeLessThan(
+      map.layers.indexOf("osm-candidates")
+    );
+    expect(maplibreState.sourceData.get("map-match-connections")).toMatchObject(
+      {
+        type: "FeatureCollection",
+        features: [
+          {
+            geometry: {
+              type: "LineString",
+              coordinates: [
+                [stop.longitude, stop.latitude],
+                [nearest.longitude, nearest.latitude]
+              ]
+            }
+          }
+        ]
+      }
+    );
+
+    rerender(<MapView nodes={nodes} stops={stops} matches={matches} />);
+    await waitFor(() =>
+      expect(
+        maplibreState.sourceData.get("map-match-connections")
+      ).toMatchObject({
+        type: "FeatureCollection",
+        features: []
+      })
+    );
   });
 
   it("opens tag popups and focuses the queue for stop and OSM candidate icons", async () => {

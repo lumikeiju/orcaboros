@@ -147,7 +147,7 @@ export function SourcePicker({
 
   return (
     <section className="panel" aria-labelledby="source-heading">
-      <h2 id="source-heading">Select local GTFS feed(s)</h2>
+      <h2 id="source-heading">Upload GTFS ZIPs</h2>
       <p>Only stops.txt is read; each feed ID defaults to the ZIP filename.</p>
       <label
         className={`file-control file-drop-zone${
@@ -159,7 +159,7 @@ export function SourcePicker({
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
       >
-        <span>Select or drop local GTFS ZIPs</span>
+        <span>Choose or drop GTFS ZIPs</span>
         <input
           id="gtfs-files"
           type="file"
@@ -169,11 +169,11 @@ export function SourcePicker({
         />
       </label>
       <table className="source-table">
-        <caption className="visually-hidden">Selected source feeds</caption>
+        <caption className="visually-hidden">Selected GTFS ZIPs</caption>
         <thead>
           <tr>
             <th scope="col">GTFS Feed ID</th>
-            <th scope="col">GTFS Feed ZIP</th>
+            <th scope="col">GTFS ZIP</th>
             <th scope="col" aria-label="Actions">
               <span className="visually-hidden">Actions</span>
             </th>
@@ -183,7 +183,7 @@ export function SourcePicker({
           {selected.length === 0 ? (
             <tr>
               <td className="muted" colSpan={3}>
-                No archives selected.
+                No GTFS ZIPs selected.
               </td>
             </tr>
           ) : (
@@ -240,7 +240,8 @@ export function SourcePicker({
       </table>
       {unsupportedFeedIds.length > 0 && (
         <p className="source-warning" role="status">
-          Unsupported feeds will be skipped: {unsupportedFeedIds.join(", ")}.
+          Unsupported GTFS ZIPs will be skipped: {unsupportedFeedIds.join(", ")}
+          .
         </p>
       )}
     </section>

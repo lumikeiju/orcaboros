@@ -28,7 +28,7 @@ describe("IntroWarning", () => {
     ).toBeInTheDocument();
     expect(
       screen.getByRole("button", {
-        name: "I have read these warnings — continue"
+        name: /I have read these warnings/
       })
     ).toHaveFocus();
   });
@@ -37,7 +37,7 @@ describe("IntroWarning", () => {
     render(<IntroWarning />);
 
     const continueButton = screen.getByRole("button", {
-      name: "I have read these warnings — continue"
+      name: /I have read these warnings/
     });
     const firstLink = screen.getByRole("link", {
       name: "Automated Edits Code of Conduct"
@@ -55,7 +55,7 @@ describe("IntroWarning", () => {
 
     fireEvent.click(
       screen.getByRole("button", {
-        name: "I have read these warnings — continue"
+        name: /I have read these warnings/
       })
     );
 
@@ -75,7 +75,7 @@ describe("IntroWarning", () => {
 
     fireEvent.click(
       screen.getByRole("button", {
-        name: "I have read these warnings — continue"
+        name: /I have read these warnings/
       })
     );
 

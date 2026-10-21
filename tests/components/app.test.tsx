@@ -12,6 +12,17 @@ describe("App workflow sidebar", () => {
     expect(screen.getByText(`v${packageMetadata.version}`)).toBeInTheDocument();
   });
 
+  it("provides a keyboard skip link to the workspace", () => {
+    render(<App />);
+
+    expect(
+      screen.getByRole("link", { name: "Skip to workspace" })
+    ).toHaveAttribute("href", "#workspace-main");
+    expect(
+      screen.getByRole("region", { name: "Conflation workspace" })
+    ).toHaveAttribute("tabindex", "-1");
+  });
+
   it("shows the intro warning when the app loads", () => {
     render(<App />);
 
@@ -24,7 +35,7 @@ describe("App workflow sidebar", () => {
     render(<App />);
 
     const importStep = screen.getByRole("button", {
-      name: /1 Upload Import local GTFS ZIPs/
+      name: /1 Upload Upload GTFS ZIPs/
     });
     const profileStep = screen.getByRole("button", {
       name: /2 Profile Review field mappings \(optional\)/
@@ -32,13 +43,17 @@ describe("App workflow sidebar", () => {
 
     expect(importStep).toHaveAttribute("aria-expanded", "true");
     expect(importStep).toHaveAttribute("aria-controls", "upload-step-panel");
-    expect(screen.getByText("Select local GTFS feed(s)")).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Upload GTFS ZIPs" })
+    ).toBeInTheDocument();
 
     fireEvent.click(profileStep);
 
     expect(importStep).toHaveAttribute("aria-expanded", "false");
     expect(profileStep).toHaveAttribute("aria-expanded", "true");
-    expect(screen.queryByText("Select local GTFS feed(s)")).toBeNull();
+    expect(
+      screen.queryByRole("heading", { name: "Upload GTFS ZIPs" })
+    ).toBeNull();
     expect(screen.getByText("Mapping profile")).toBeInTheDocument();
     expect(screen.getByLabelText("Candidate radius (m)")).toBeInTheDocument();
     expect(screen.getByLabelText("Auto-match radius")).toBeInTheDocument();
@@ -86,7 +101,7 @@ describe("App workflow sidebar", () => {
     expect(screen.getByText("Optional")).toBeInTheDocument();
     expect(screen.getAllByText("Waiting")).toHaveLength(3);
 
-    fireEvent.change(screen.getByLabelText("Select or drop local GTFS ZIPs"), {
+    fireEvent.change(screen.getByLabelText("Choose or drop GTFS ZIPs"), {
       target: {
         files: [new File(["one"], "US-WA-KCM.zip", { type: "application/zip" })]
       }
@@ -131,7 +146,7 @@ describe("App workflow sidebar", () => {
 
     fireEvent.click(
       screen.getByRole("button", {
-        name: "I have read these warnings — continue"
+        name: /I have read these warnings/
       })
     );
     const resetButton = screen.getByRole("button", {
@@ -155,9 +170,9 @@ describe("App workflow sidebar", () => {
   it("uses the process label for selected feeds", () => {
     render(<App />);
 
-    const fileInput = screen.getByLabelText("Select or drop local GTFS ZIPs");
+    const fileInput = screen.getByLabelText("Choose or drop GTFS ZIPs");
     const importButton = screen.getByRole("button", {
-      name: "Process selected feeds"
+      name: "Process selected GTFS ZIPs"
     });
 
     fireEvent.change(fileInput, {
@@ -166,7 +181,7 @@ describe("App workflow sidebar", () => {
       }
     });
 
-    expect(importButton).toHaveTextContent("Process selected feeds");
+    expect(importButton).toHaveTextContent("Process selected GTFS ZIPs");
 
     fireEvent.change(fileInput, {
       target: {
@@ -177,13 +192,13 @@ describe("App workflow sidebar", () => {
       }
     });
 
-    expect(importButton).toHaveTextContent("Process selected feeds");
+    expect(importButton).toHaveTextContent("Process selected GTFS ZIPs");
   });
 
   it("applies the matching feed profile when a known ID is selected", () => {
     render(<App />);
 
-    fireEvent.change(screen.getByLabelText("Select or drop local GTFS ZIPs"), {
+    fireEvent.change(screen.getByLabelText("Choose or drop GTFS ZIPs"), {
       target: {
         files: [new File(["one"], "US-WA-KCM.zip", { type: "application/zip" })]
       }
@@ -204,7 +219,7 @@ describe("App workflow sidebar", () => {
   it("uses an editable custom profile for an unknown feed ID", () => {
     render(<App />);
 
-    fireEvent.change(screen.getByLabelText("Select or drop local GTFS ZIPs"), {
+    fireEvent.change(screen.getByLabelText("Choose or drop GTFS ZIPs"), {
       target: {
         files: [new File(["one"], "US-WA-NEW.zip", { type: "application/zip" })]
       }
@@ -218,6 +233,8 @@ describe("App workflow sidebar", () => {
     expect(
       screen.getByText("Custom feed mapping applies to US-WA-NEW.")
     ).toBeInTheDocument();
-    expect(screen.queryByText(/Unsupported feeds will be skipped/i)).toBeNull();
+    expect(
+      screen.queryByText(/Unsupported GTFS ZIPs will be skipped/i)
+    ).toBeNull();
   });
 });

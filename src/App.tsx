@@ -201,7 +201,7 @@ export function App(): ReactElement {
   const [reviewHeight, setReviewHeight] = useState(33);
   const [endpoint, setEndpoint] = useState("");
   const [styleUrl, setStyleUrl] = useState("");
-  const [status, setStatus] = useState("Select local feeds to begin.");
+  const [status, setStatus] = useState("Upload GTFS ZIPs to begin.");
   const [error, setError] = useState<string | undefined>();
   const [exportError, setExportError] = useState<string | undefined>();
   const [loading, setLoading] = useState(false);
@@ -936,7 +936,7 @@ export function App(): ReactElement {
       setOsmRequestResult(undefined);
       setExportError(undefined);
       setError(undefined);
-      setStatus("Session reset. Select local feeds to begin.");
+      setStatus("Session reset. Upload GTFS ZIPs to begin.");
       setResetConfirmationOpen(false);
       return true;
     } catch (caught: unknown) {
@@ -1037,7 +1037,7 @@ export function App(): ReactElement {
       id: "upload",
       number: "1",
       label: "Upload",
-      detail: "Import local GTFS ZIPs"
+      detail: "Upload GTFS ZIPs"
     },
     {
       id: "profile",
@@ -1205,7 +1205,7 @@ export function App(): ReactElement {
                     ? "Cancel import"
                     : loading
                       ? "Working…"
-                      : "Process selected feeds"}
+                      : "Process selected GTFS ZIPs"}
                 </button>
                 <button
                   ref={resetSessionButtonRef}
@@ -1514,6 +1514,9 @@ export function App(): ReactElement {
 
   return (
     <main className="app-shell" style={layoutStyle}>
+      <a className="skip-link" href="#workspace-main">
+        Skip to workspace
+      </a>
       <header className="app-header">
         <div className="brand-lockup">
           <span className="brand-mark" aria-hidden="true" />
@@ -1609,7 +1612,12 @@ export function App(): ReactElement {
           label="Resize workflow sidebar width"
           onChange={setRailWidth}
         />
-        <section className="workspace-main" aria-label="Conflation workspace">
+        <section
+          id="workspace-main"
+          className="workspace-main"
+          aria-label="Conflation workspace"
+          tabIndex={-1}
+        >
           <section className="map-column" aria-labelledby="map-heading">
             <div className="section-heading">
               <div>
@@ -1678,7 +1686,7 @@ export function App(): ReactElement {
               <h2 id="review-empty-heading">Review items will appear here</h2>
               <p>
                 {stops.length === 0
-                  ? "Import a local feed and retrieve OSM candidates to begin comparing stops."
+                  ? "Upload a GTFS ZIP and retrieve OSM candidates to begin comparing stops."
                   : "Retrieve OSM candidates to load the review queue."}
               </p>
             </section>

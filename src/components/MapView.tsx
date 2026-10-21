@@ -108,6 +108,8 @@ const CANDIDATE_VISUAL = { color: "#67D9C8", shape: "cross" } as const;
  */
 const SELECTION_HIGHLIGHT_VARIABLE = "--color-selection-highlight";
 const SELECTION_HIGHLIGHT_FALLBACK = "#67D9C8";
+const ALTERNATIVE_HIGHLIGHT_VARIABLE = "--color-focus";
+const ALTERNATIVE_HIGHLIGHT_FALLBACK = "#FBBF24";
 
 function readSelectionHighlightColor(): string {
   const value = getComputedStyle(document.documentElement)
@@ -115,6 +117,16 @@ function readSelectionHighlightColor(): string {
     .trim();
   return value.length > 0 ? value : SELECTION_HIGHLIGHT_FALLBACK;
 }
+
+function readAlternativeHighlightColor(): string {
+  const value = getComputedStyle(document.documentElement)
+    .getPropertyValue(ALTERNATIVE_HIGHLIGHT_VARIABLE)
+    .trim();
+  return value.length > 0 ? value : ALTERNATIVE_HIGHLIGHT_FALLBACK;
+}
+
+type MapHighlightRole = "primary" | "alternative";
+
 type HeatmapColor = {
   low: string;
   medium: string;
@@ -285,6 +297,8 @@ function addFocusHaloLayer(
   instance: MapLibreMap,
   id: string,
   source: string,
+  highlightRole: MapHighlightRole,
+  color: string,
   labelLayerId: string | undefined
 ): void {
   instance.addLayer(
@@ -293,9 +307,9 @@ function addFocusHaloLayer(
       type: "circle",
       source,
       minzoom: DETAIL_ZOOM,
-      filter: ["==", ["get", "focused"], true],
+      filter: ["==", ["get", "highlight"], highlightRole],
       paint: {
-        "circle-color": readSelectionHighlightColor(),
+        "circle-color": color,
         "circle-opacity": 0.55,
         "circle-blur": 0.75,
         "circle-radius": [
@@ -321,11 +335,28 @@ function addFocusHaloLayers(
 ): void {
   addFocusHaloLayer(
     instance,
-    "map-focus-candidates",
+    "map-focus-candidates-primary",
     "osm-candidates",
+    "primary",
+    readSelectionHighlightColor(),
     labelLayerId
   );
-  addFocusHaloLayer(instance, "map-focus-markers", "map-markers", labelLayerId);
+  addFocusHaloLayer(
+    instance,
+    "map-focus-candidates-alternative",
+    "osm-candidates",
+    "alternative",
+    readAlternativeHighlightColor(),
+    labelLayerId
+  );
+  addFocusHaloLayer(
+    instance,
+    "map-focus-markers",
+    "map-markers",
+    "primary",
+    readSelectionHighlightColor(),
+    labelLayerId
+  );
 }
 
 type MapData = {
@@ -337,7 +368,8 @@ type MapData = {
   markers: readonly MapMarker[];
   candidateNodes: readonly OsmElement[];
   focusedFeatureId: string | undefined;
-  focusedCandidateNodeIds: ReadonlySet<string>;
+  focusedCandidateNodeHighlights: ReadonlyMap<string, MapHighlightRole>;
+  connectionFeatures: ReturnType<typeof focusedCandidateConnectionFeatures>;
 };
 
 type MapFeatureCollection = Parameters<GeoJSONSource["setData"]>[0];
@@ -464,7 +496,7 @@ export function getStopBounds(
 
 function candidateFeatures(
   nodes: readonly OsmElement[],
-  focusedNodeIds: ReadonlySet<string>
+  focusedNodeHighlights: ReadonlyMap<string, MapHighlightRole>
 ) {
   return nodes.map((node) => ({
     type: "Feature" as const,
@@ -474,9 +506,45 @@ function candidateFeatures(
     },
     properties: {
       id: elementKey(node),
-      focused: focusedNodeIds.has(elementKey(node))
+      highlight: focusedNodeHighlights.get(elementKey(node))
     }
   }));
+}
+
+function focusedCandidateConnectionFeatures(
+  stops: readonly EligibleStop[],
+  candidateNodes: readonly OsmElement[],
+  focusedFeatureId: string | undefined,
+  focusedNodeHighlights: ReadonlyMap<string, MapHighlightRole>
+) {
+  if (focusedFeatureId === undefined) {
+    return [];
+  }
+  const stop = stops.find(
+    (candidate) => candidate.featureId === focusedFeatureId
+  );
+  const primaryCandidate = candidateNodes.find(
+    (candidate) =>
+      focusedNodeHighlights.get(elementKey(candidate)) === "primary"
+  );
+  if (stop === undefined || primaryCandidate === undefined) {
+    return [];
+  }
+  return [
+    {
+      type: "Feature" as const,
+      geometry: {
+        type: "LineString" as const,
+        coordinates: [
+          [stop.longitude, stop.latitude],
+          [primaryCandidate.longitude, primaryCandidate.latitude]
+        ]
+      },
+      properties: {
+        id: `${stop.featureId}:${elementKey(primaryCandidate)}`
+      }
+    }
+  ];
 }
 
 function markerFeatures(
@@ -493,7 +561,7 @@ function markerFeatures(
       id: marker.id,
       kind: marker.kind,
       processed: marker.processed,
-      focused: marker.id === focusedFeatureId
+      highlight: marker.id === focusedFeatureId ? "primary" : undefined
     }
   }));
 }
@@ -589,32 +657,50 @@ export function buildMapMarkers(
   };
 }
 
-function getFocusedCandidateNodeIds(
+export function getFocusedCandidateNodeHighlights(
   focusedFeatureId: string | undefined,
   matches: ReadonlyMap<string, InitialMatch>,
   reviews: ReadonlyMap<string, FeatureReview>
-): ReadonlySet<string> {
+): ReadonlyMap<string, MapHighlightRole> {
   if (focusedFeatureId === undefined) {
-    return new Set();
+    return new Map();
   }
   const result = matches.get(focusedFeatureId);
   if (result?.kind === "auto-matched") {
-    return new Set([elementKey(result.candidate.node)]);
+    return new Map([[elementKey(result.candidate.node), "primary"]]);
   }
   if (result?.kind !== "review") {
-    return new Set();
+    return new Map();
   }
   const selectedElement = selectedElementRef(
     reviews.get(focusedFeatureId) ?? {
       selectedNodeId: undefined
     }
   );
-  if (selectedElement !== undefined) {
-    return new Set([elementKey(selectedElement)]);
+  const selectedElementKey =
+    selectedElement === undefined ? undefined : elementKey(selectedElement);
+  const closestCandidate = [...result.candidates].sort(
+    (left, right) =>
+      left.distanceMeters - right.distanceMeters ||
+      elementKey(left.node).localeCompare(elementKey(right.node))
+  )[0];
+  const primaryCandidateKey =
+    selectedElementKey ??
+    (closestCandidate === undefined
+      ? undefined
+      : elementKey(closestCandidate.node));
+  const highlights = new Map<string, MapHighlightRole>();
+  for (const candidate of result.candidates) {
+    const candidateKey = elementKey(candidate.node);
+    highlights.set(
+      candidateKey,
+      candidateKey === primaryCandidateKey ? "primary" : "alternative"
+    );
   }
-  return new Set(
-    result.candidates.map((candidate) => elementKey(candidate.node))
-  );
+  if (selectedElementKey !== undefined && !highlights.has(selectedElementKey)) {
+    highlights.set(selectedElementKey, "primary");
+  }
+  return highlights;
 }
 
 function updateMapSource(
@@ -656,11 +742,21 @@ function updateProcessedSource(
 function updateCandidateSource(
   instance: MapLibreMap,
   nodes: readonly OsmElement[],
-  focusedNodeIds: ReadonlySet<string>
+  focusedNodeHighlights: ReadonlyMap<string, MapHighlightRole>
 ): void {
   updateMapSource(instance, "osm-candidates", {
     type: "FeatureCollection",
-    features: candidateFeatures(nodes, focusedNodeIds)
+    features: candidateFeatures(nodes, focusedNodeHighlights)
+  });
+}
+
+function updateMatchConnectionSource(
+  instance: MapLibreMap,
+  features: ReturnType<typeof focusedCandidateConnectionFeatures>
+): void {
+  updateMapSource(instance, "map-match-connections", {
+    type: "FeatureCollection",
+    features
   });
 }
 
@@ -743,6 +839,24 @@ export function MapLegend(): ReactElement {
           Candidate
         </li>
         <li>
+          <span
+            className="map-legend-highlight is-primary"
+            aria-hidden="true"
+          />
+          Focused stop / closest candidate
+        </li>
+        <li>
+          <span
+            className="map-legend-highlight is-alternative"
+            aria-hidden="true"
+          />
+          Alternative candidates (2+)
+        </li>
+        <li>
+          <span className="map-legend-connection" aria-hidden="true" />
+          Focused stop-to-candidate link
+        </li>
+        <li>
           <span className="map-legend-processed" aria-hidden="true" />
           Processed
         </li>
@@ -777,10 +891,16 @@ export function MapView({
     validStopIds,
     exactMatchRadiusMeters
   );
-  const focusedCandidateNodeIds = getFocusedCandidateNodeIds(
+  const focusedCandidateNodeHighlights = getFocusedCandidateNodeHighlights(
     focusedFeatureId,
     matches,
     reviews
+  );
+  const connectionFeatures = focusedCandidateConnectionFeatures(
+    stops,
+    derivedMapData.candidateNodes,
+    focusedFeatureId,
+    focusedCandidateNodeHighlights
   );
   const mapData = useRef<MapData>({
     nodes,
@@ -791,7 +911,8 @@ export function MapView({
     markers: derivedMapData.markers,
     candidateNodes: derivedMapData.candidateNodes,
     focusedFeatureId,
-    focusedCandidateNodeIds
+    focusedCandidateNodeHighlights,
+    connectionFeatures
   });
   const focusedFeatureIdRef = useRef(focusedFeatureId);
   const onFeatureClickRef = useRef(onFeatureClick);
@@ -804,7 +925,8 @@ export function MapView({
     markers: derivedMapData.markers,
     candidateNodes: derivedMapData.candidateNodes,
     focusedFeatureId,
-    focusedCandidateNodeIds
+    focusedCandidateNodeHighlights,
+    connectionFeatures
   };
   focusedFeatureIdRef.current = focusedFeatureId;
   onFeatureClickRef.current = onFeatureClick;
@@ -870,12 +992,56 @@ export function MapView({
             type: "FeatureCollection",
             features: candidateFeatures(
               mapData.current.candidateNodes,
-              mapData.current.focusedCandidateNodeIds
+              mapData.current.focusedCandidateNodeHighlights
             )
+          }
+        });
+        instance.addSource("map-match-connections", {
+          type: "geojson",
+          data: {
+            type: "FeatureCollection",
+            features: mapData.current.connectionFeatures
           }
         });
         addStatusHeatmapLayers(instance, labelLayerId);
         addFocusHaloLayers(instance, labelLayerId);
+        instance.addLayer(
+          {
+            id: "map-match-connection-casing",
+            type: "line",
+            source: "map-match-connections",
+            minzoom: DETAIL_ZOOM,
+            layout: {
+              "line-cap": "round",
+              "line-join": "round"
+            },
+            paint: {
+              "line-color": "#0C1519",
+              "line-opacity": 0.9,
+              "line-width": 5
+            }
+          },
+          labelLayerId
+        );
+        instance.addLayer(
+          {
+            id: "map-match-connection",
+            type: "line",
+            source: "map-match-connections",
+            minzoom: DETAIL_ZOOM,
+            layout: {
+              "line-cap": "round",
+              "line-join": "round"
+            },
+            paint: {
+              "line-color": readSelectionHighlightColor(),
+              "line-opacity": 0.95,
+              "line-width": 2.5,
+              "line-dasharray": [2, 1.5]
+            }
+          },
+          labelLayerId
+        );
         instance.addLayer(
           {
             id: "osm-candidates",
@@ -1098,7 +1264,11 @@ export function MapView({
       updateCandidateSource(
         map.current,
         mapData.current.candidateNodes,
-        mapData.current.focusedCandidateNodeIds
+        mapData.current.focusedCandidateNodeHighlights
+      );
+      updateMatchConnectionSource(
+        map.current,
+        mapData.current.connectionFeatures
       );
     }
   }, [
