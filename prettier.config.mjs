@@ -1,6 +1,6 @@
 /** @type {import("prettier").Config} */
 export default {
-  endOfLine: "crlf",
+  endOfLine: "lf",
   proseWrap: "never",
   trailingComma: "none"
 };
