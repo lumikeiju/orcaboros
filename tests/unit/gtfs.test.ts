@@ -10,7 +10,8 @@ import {
   ProfileValidationError,
   validateMappingProfile
 } from "../../src/domain/profile";
-import { getProfileForFeedId } from "../../src/profiles";
+import { STOCK_SOURCE_FEED_DEFINITIONS } from "../../src/domain/source-feed";
+import { getDefaultProfile, getProfileForFeedId } from "../../src/profiles";
 import { mapStopToOsmTags } from "../../src/infrastructure/gtfs";
 
 describe("GTFS stop eligibility", () => {
@@ -53,7 +54,8 @@ describe("GTFS stop eligibility", () => {
         stop_name: "Merrill Creek Pkwy & Glenwood Ave - Westbound",
         stop_lat: "47.9",
         stop_lon: "-122.2",
-        location_type: "0"
+        location_type: "0",
+        stop_code: "ET-64"
       }
     });
     if (!("stop" in result)) {
@@ -64,7 +66,39 @@ describe("GTFS stop eligibility", () => {
     expect(tags.name).toBe(
       "Merrill Creek Parkway & Glenwood Avenue - Westbound"
     );
+    expect(tags["gtfs:stop_code:US-WA-ET"]).toBe("ET-64");
+    expect(tags).not.toHaveProperty("ref");
     expect(tags).not.toHaveProperty("gtfs:stop_id:US-WA-ET");
+  });
+
+  it("keeps stop-code mappings and cleanup keys feed-specific in combined stock profiles", () => {
+    const profile = getDefaultProfile();
+    for (const source of STOCK_SOURCE_FEED_DEFINITIONS) {
+      const result = createEligibleStop(source.id, source.id, {
+        rowNumber: 2,
+        fields: {
+          stop_id: "1",
+          stop_name: "Main Street",
+          stop_lat: "47",
+          stop_lon: "-122",
+          stop_code: "STOP-1"
+        }
+      });
+      if (!("stop" in result)) {
+        throw new Error(`fixture stop is invalid for ${source.id}`);
+      }
+
+      const tags = mapStopToOsmTags(profile, result.stop);
+      expect(tags[`gtfs:stop_code:${source.id}`]).toBe("STOP-1");
+      expect(
+        Object.keys(tags).filter((key) => key.startsWith("gtfs:stop_code:"))
+      ).toEqual([`gtfs:stop_code:${source.id}`]);
+      expect(evaluateRemovalKeys(profile, result.stop)).toEqual([
+        "gtfs:stop_id",
+        `gtfs:stop_id:${source.id}`,
+        "gtfs:feed"
+      ]);
+    }
   });
 
   it("can disable street-name cleanup without changing the raw stop name", () => {

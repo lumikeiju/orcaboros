@@ -132,8 +132,14 @@ describe("ReviewQueue", () => {
       />
     );
 
+    const reviewHeading = screen.getByRole("heading", {
+      name: "Review Queue (1)",
+      level: 2
+    });
+    expect(reviewHeading).toBeInTheDocument();
+    expect(reviewHeading.parentElement).toHaveClass("review-queue-heading-row");
     expect(
-      screen.getByRole("heading", { name: "Review Queue (1)", level: 2 })
+      reviewHeading.parentElement?.querySelector("details.review-filters")
     ).toBeInTheDocument();
     expect(
       screen.getByRole("heading", { name: "Decision", level: 2 })
@@ -321,6 +327,61 @@ describe("ReviewQueue", () => {
     expect(rowForTag("public_transport")).toHaveClass("is-add");
     expect(rowForTag("name")).toHaveClass("is-both");
     expect(rowForTag("shelter")).toHaveClass("is-none");
+  });
+
+  it("shows and accepts the map-selected OSM element outside the original candidates", () => {
+    const originalCandidate = {
+      ...makeExactCandidate(23, 4),
+      exactIdentity: false
+    };
+    const selectedNode: OsmNode = {
+      id: 24,
+      version: 1,
+      latitude: 48.015,
+      longitude: -122.201,
+      tags: { name: "Existing OSM replacement" }
+    };
+    const review: FeatureReview = {
+      featureId: stop.featureId,
+      state: "match-selected",
+      selectedNodeId: selectedNode.id,
+      selectedElement: { type: "node", id: selectedNode.id },
+      createCoordinates: undefined,
+      proposals: buildTagProposals(selectedNode, {
+        name: "Replacement stop"
+      })
+    };
+    const onAction = vi.fn();
+    const { container } = render(
+      <ReviewQueue
+        stops={[stop]}
+        nodes={[originalCandidate.node, selectedNode]}
+        matches={
+          new Map([
+            [
+              stop.featureId,
+              { kind: "review", candidates: [originalCandidate] }
+            ]
+          ])
+        }
+        reviews={new Map([[stop.featureId, review]])}
+        focusedFeatureId={stop.featureId}
+        onAction={onAction}
+        onFocusFeature={vi.fn()}
+      />
+    );
+
+    const mapSelection = screen.getByRole("group", { name: "Selected on map" });
+    expect(within(mapSelection).getByRole("radio")).toBeChecked();
+    expect(diffRow(container, "latitude")).toHaveTextContent("48.015000");
+    expect(screen.getByText("Existing OSM replacement")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Accept match" }));
+
+    expect(onAction).toHaveBeenCalledWith(stop.featureId, {
+      type: "select-match",
+      nodeId: selectedNode.id
+    });
   });
 
   it("highlights configured OSM key removals in the comparison", () => {
@@ -592,9 +653,47 @@ describe("ReviewQueue", () => {
     );
 
     expect(screen.getByText("Showing 11-11 of 11 results")).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: "Focus Stop 11 on the map" })
-    ).toHaveClass("is-focused");
+    const focusButton = screen.getByRole("button", {
+      name: "Focus Stop 11 on the map"
+    });
+    expect(focusButton).toHaveClass("is-focused");
+    expect(focusButton).toHaveFocus();
+  });
+
+  it("refocuses an already focused item on a new queue-open request", () => {
+    const onAction = vi.fn();
+    const onFocusFeature = vi.fn();
+    const { rerender } = render(
+      <ReviewQueue
+        stops={[stop]}
+        matches={new Map()}
+        reviews={new Map()}
+        focusedFeatureId={stop.featureId}
+        focusRequest={0}
+        onAction={onAction}
+        onFocusFeature={onFocusFeature}
+      />
+    );
+
+    const focusButton = screen.getByRole("button", {
+      name: "Focus State Avenue & 92nd Street NE on the map"
+    });
+    expect(focusButton).toHaveFocus();
+    screen.getByText("Filters").focus();
+
+    rerender(
+      <ReviewQueue
+        stops={[stop]}
+        matches={new Map()}
+        reviews={new Map()}
+        focusedFeatureId={stop.featureId}
+        focusRequest={1}
+        onAction={onAction}
+        onFocusFeature={onFocusFeature}
+      />
+    );
+
+    expect(focusButton).toHaveFocus();
   });
 
   it("reveals an exact result when a map marker focuses it", () => {

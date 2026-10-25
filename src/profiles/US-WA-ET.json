@@ -21,12 +21,13 @@
           "value": { "kind": "constant", "value": "bus_stop" },
           "appliesTo": { "locationKinds": ["platform"] }
         }
-      ]
+      ],
+      "removeKeys": ["gtfs:stop_id", "gtfs:stop_id:US-WA-ET", "gtfs:feed"]
     }
   ],
   "mappingRules": [
     {
-      "key": "ref",
+      "key": "gtfs:stop_code:US-WA-ET",
       "value": { "kind": "field", "field": "stop_code" },
       "appliesTo": { "sourceFeedIds": ["US-WA-ET"] }
     },

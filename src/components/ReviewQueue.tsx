@@ -2,6 +2,7 @@ import { type ReactElement, useEffect, useMemo, useRef, useState } from "react";
 import { CandidateMatch, InitialMatch } from "../domain/matching";
 import { EligibleStop } from "../domain/gtfs";
 import { elementKey, isOsmWay, OsmElement, OsmElementRef } from "../domain/osm";
+import { haversineDistanceMeters } from "../domain/geo";
 import {
   FeatureReview,
   ReviewAction,
@@ -150,6 +151,7 @@ type ReviewQueueProps = {
   exactMatchRadiusMeters?: number;
   onAction: (featureId: string, action: ReviewAction) => void;
   focusedFeatureId?: string;
+  focusRequest?: number;
   onFocusFeature: (featureId: string) => void;
 };
 
@@ -163,6 +165,7 @@ export function ReviewQueue({
   exactMatchRadiusMeters = Number.POSITIVE_INFINITY,
   onAction,
   focusedFeatureId,
+  focusRequest,
   onFocusFeature
 }: ReviewQueueProps): ReactElement {
   const [filters, setFilters] = useState<ReviewFilters>({
@@ -299,7 +302,7 @@ export function ReviewQueue({
     if (focusedFeatureId !== undefined) {
       focusedCardRef.current?.focus();
     }
-  }, [currentPage, focusedFeatureId]);
+  }, [currentPage, focusRequest, focusedFeatureId]);
 
   function toggleFilter(category: ReviewCategory): void {
     setFilters((current) => ({
@@ -328,6 +331,10 @@ export function ReviewQueue({
   function renderStopCard(item: StopReviewItem): ReactElement {
     const { stop, result, review } = item;
     const stopCode = stop.rawFields.stop_code?.trim() || "—";
+    const selectedElement = getSelectedOsmElement(result, review, nodes);
+    const selectedElementIsOutsideCandidates =
+      selectedElement !== undefined &&
+      getCandidateMatch(result, selectedElement) === undefined;
     return (
       <li
         key={stop.featureId}
@@ -415,6 +422,33 @@ export function ReviewQueue({
             ))}
           </fieldset>
         )}
+        {selectedElementIsOutsideCandidates &&
+          selectedElement !== undefined && (
+            <fieldset>
+              <legend>Selected on map</legend>
+              <label className="choice">
+                <input
+                  type="radio"
+                  name={`candidate-${stop.featureId}`}
+                  checked={isSelected(review, selectedElement)}
+                  onChange={() =>
+                    onAction(stop.featureId, selectionAction(selectedElement))
+                  }
+                />
+                <span>
+                  OSM {isOsmWay(selectedElement) ? "way" : "node"}{" "}
+                  {selectedElement.id},{" "}
+                  {haversineDistanceMeters(
+                    stop.latitude,
+                    stop.longitude,
+                    selectedElement.latitude,
+                    selectedElement.longitude
+                  ).toFixed(1)}{" "}
+                  m
+                </span>
+              </label>
+            </fieldset>
+          )}
         {review !== undefined && review.proposals.length > 0 && (
           <fieldset>
             <legend>Tag decisions</legend>
@@ -601,16 +635,30 @@ export function ReviewQueue({
       );
     }
     const { stop, result, review } = item;
-    const candidate = getPrimaryCandidate(result);
+    const selectedElement = getSelectedOsmElement(result, review, nodes);
+    const candidateMatch =
+      selectedElement === undefined
+        ? undefined
+        : getCandidateMatch(result, selectedElement);
     const gtfsLatitude = stop.latitude.toFixed(6);
-    const osmLatitude = candidate?.node.latitude.toFixed(6);
+    const osmLatitude = selectedElement?.latitude.toFixed(6);
     const gtfsLongitude = stop.longitude.toFixed(6);
-    const osmLongitude = candidate?.node.longitude.toFixed(6);
+    const osmLongitude = selectedElement?.longitude.toFixed(6);
+    const distanceMeters =
+      selectedElement === undefined
+        ? undefined
+        : (candidateMatch?.distanceMeters ??
+          haversineDistanceMeters(
+            stop.latitude,
+            stop.longitude,
+            selectedElement.latitude,
+            selectedElement.longitude
+          ));
     const geometryTarget =
       geometryTargets?.get(stop.sourceFeedId) ?? DEFAULT_GEOMETRY_TARGET;
     const coordinatesWillChange =
-      candidate === undefined ||
-      (geometryTarget === "gtfs" && !isOsmWay(candidate.node));
+      selectedElement === undefined ||
+      (geometryTarget === "gtfs" && !isOsmWay(selectedElement));
     const proposedTags = new Map(
       (review?.proposals ?? []).map(({ key, proposedValue }) => [
         key,
@@ -620,7 +668,7 @@ export function ReviewQueue({
     const tagProposals = new Map(
       (review?.proposals ?? []).map((proposal) => [proposal.key, proposal])
     );
-    const osmTags = candidate?.node.tags ?? {};
+    const osmTags = selectedElement?.tags ?? {};
     const tagRows = [
       ...new Set([...proposedTags.keys(), ...Object.keys(osmTags)])
     ]
@@ -723,9 +771,9 @@ export function ReviewQueue({
                 gtfsValue="—"
                 osmLabel="distance"
                 osmValue={
-                  candidate === undefined
+                  distanceMeters === undefined
                     ? "-"
-                    : `${candidate.distanceMeters.toFixed(0)} m`
+                    : `${distanceMeters.toFixed(0)} m`
                 }
                 highlight="none"
               />
@@ -737,17 +785,21 @@ export function ReviewQueue({
   }
 
   function renderDecisionActions(item: StopReviewItem): ReactElement {
-    const candidate = getPrimaryCandidate(item.result);
+    const selectedElement = getSelectedOsmElement(
+      item.result,
+      item.review,
+      nodes
+    );
     return (
       <div className="review-decision-actions">
-        {candidate !== undefined && (
+        {selectedElement !== undefined && (
           <button
             type="button"
             className="glass-button glass-button--success decision-accept"
             onClick={() =>
               handleDecisionAction(
                 item.stop.featureId,
-                selectionAction(candidate.node)
+                selectionAction(selectedElement)
               )
             }
           >
@@ -783,48 +835,52 @@ export function ReviewQueue({
   return (
     <div className="review-columns">
       <section className="review-queue-panel" aria-labelledby="review-heading">
-        <h2 id="review-heading">Review Queue ({items.length})</h2>
+        <div className="review-queue-heading-row">
+          <h2 id="review-heading">Review Queue ({items.length})</h2>
+          <details className="review-filters" ref={filtersDisclosureRef}>
+            <summary className="glass-button glass-button--secondary">
+              Filters
+            </summary>
+            <div
+              className="review-filter-menu glass-pane glass-pane--level-2"
+              role="group"
+              aria-label="Show results"
+            >
+              {(["new", "removed", "moved", "exact"] as const).map(
+                (category) => (
+                  <button
+                    type="button"
+                    className={`glass-toggle review-filter-toggle${
+                      filters[category] ? " is-on" : ""
+                    }`}
+                    role="switch"
+                    aria-checked={filters[category]}
+                    aria-label={`Show ${category} results`}
+                    key={category}
+                    onClick={() => toggleFilter(category)}
+                  >
+                    <span
+                      className="review-toggle-track glass-toggle-track"
+                      aria-hidden="true"
+                    >
+                      <span className="review-toggle-thumb glass-toggle-thumb" />
+                    </span>
+                    <span className="review-filter-label">{category}</span>
+                    <span className="review-filter-count">
+                      {categoryCounts[category]}
+                    </span>
+                  </button>
+                )
+              )}
+            </div>
+          </details>
+        </div>
         <p>
           Every feature must be explicitly matched, created, or skipped before
           an export can be enabled. Name and distance evidence never
           auto-selects.
         </p>
         {!hasVisibleItems && reviewSummary}
-        <details className="review-filters" ref={filtersDisclosureRef}>
-          <summary className="glass-button glass-button--secondary">
-            Filters
-          </summary>
-          <div
-            className="review-filter-menu glass-pane glass-pane--level-2"
-            role="group"
-            aria-label="Show results"
-          >
-            {(["new", "removed", "moved", "exact"] as const).map((category) => (
-              <button
-                type="button"
-                className={`glass-toggle review-filter-toggle${
-                  filters[category] ? " is-on" : ""
-                }`}
-                role="switch"
-                aria-checked={filters[category]}
-                aria-label={`Show ${category} results`}
-                key={category}
-                onClick={() => toggleFilter(category)}
-              >
-                <span
-                  className="review-toggle-track glass-toggle-track"
-                  aria-hidden="true"
-                >
-                  <span className="review-toggle-thumb glass-toggle-thumb" />
-                </span>
-                <span className="review-filter-label">{category}</span>
-                <span className="review-filter-count">
-                  {categoryCounts[category]}
-                </span>
-              </button>
-            ))}
-          </div>
-        </details>
         {hasVisibleItems && reviewSummary}
         <ol className="review-list glass-scrollbar">
           {pageItems.map((item) =>
@@ -904,6 +960,41 @@ function getPrimaryCandidate(
     return result.candidates[0];
   }
   return undefined;
+}
+
+function getCandidateMatch(
+  result: InitialMatch | undefined,
+  element: OsmElement | OsmElementRef
+): CandidateMatch | undefined {
+  const targetKey = elementKey(element);
+  if (result?.kind === "auto-matched") {
+    return elementKey(result.candidate.node) === targetKey
+      ? result.candidate
+      : undefined;
+  }
+  if (result?.kind === "review") {
+    return result.candidates.find(
+      (candidate) => elementKey(candidate.node) === targetKey
+    );
+  }
+  return undefined;
+}
+
+function getSelectedOsmElement(
+  result: InitialMatch | undefined,
+  review: FeatureReview | undefined,
+  nodes: readonly OsmElement[]
+): OsmElement | undefined {
+  const selectedElement =
+    review === undefined ? undefined : selectedElementRef(review);
+  if (selectedElement === undefined) {
+    return getPrimaryCandidate(result)?.node;
+  }
+  const selectedCandidate = getCandidateMatch(result, selectedElement);
+  if (selectedCandidate !== undefined) {
+    return selectedCandidate.node;
+  }
+  return nodes.find((node) => elementKey(node) === elementKey(selectedElement));
 }
 
 function findExactIdentityCandidate(

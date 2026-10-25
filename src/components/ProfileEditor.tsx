@@ -26,6 +26,7 @@ type ProfileEditorProps = {
   availableFields?: readonly string[];
   availableFieldsByFeed?: ReadonlyMap<string, readonly string[]>;
   uploadedFeedIds?: readonly string[];
+  autoMatchedStockProfile?: boolean;
   exampleStops?: readonly EligibleStop[];
   exampleRowCounts?: ReadonlyMap<string, number>;
   onChange: (profile: MappingProfile) => void;
@@ -116,6 +117,7 @@ export function ProfileEditor({
   availableFields = [],
   availableFieldsByFeed = new Map(),
   uploadedFeedIds,
+  autoMatchedStockProfile = false,
   exampleStops = [],
   exampleRowCounts = new Map(),
   onChange,
@@ -437,9 +439,22 @@ export function ProfileEditor({
           const additionalTags = sourceFeed.additionalTags ?? [];
           const removeKeys = sourceFeed.removeKeys ?? [];
           return (
-            <details className="profile-feed-section" key={sourceFeed.id} open>
+            <details
+              className="profile-feed-section"
+              key={sourceFeed.id}
+              open={!autoMatchedStockProfile}
+            >
               <summary>
-                {sourceFeed.displayName} ({sourceFeed.id})
+                <span className="profile-feed-summary-row">
+                  <span>
+                    {sourceFeed.displayName} ({sourceFeed.id})
+                  </span>
+                  {autoMatchedStockProfile && (
+                    <span className="profile-feed-auto-matched">
+                      Auto-matched
+                    </span>
+                  )}
+                </span>
               </summary>
               <div className="profile-geometry-target">
                 <span>Geometry target</span>

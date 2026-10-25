@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { downloadTextFile } from "../../src/infrastructure/browser/download";
+import {
+  createDefaultOsmFileName,
+  downloadTextFile
+} from "../../src/infrastructure/browser/download";
 
 const nativeCreateObjectURL = URL.createObjectURL;
 const nativeRevokeObjectURL = URL.revokeObjectURL;
@@ -27,6 +30,12 @@ afterEach(() => {
 });
 
 describe("browser downloads", () => {
+  it("creates a Windows-safe UTC OSM filename at minute resolution", () => {
+    expect(createDefaultOsmFileName(new Date("2026-10-25T22:51:48.321Z"))).toBe(
+      "orcaboros-2026-10-25T22-51Z.osm"
+    );
+  });
+
   it("clicks the download link before revoking its object URL", () => {
     vi.useFakeTimers();
     const createObjectURL = vi.fn(() => "blob:orcaboros");
@@ -47,11 +56,15 @@ describe("browser downloads", () => {
         clickedDownload = this.download;
       });
 
-    downloadTextFile("<osm/>", "orcaboros.osm", "application/xml");
+    downloadTextFile(
+      "<osm/>",
+      createDefaultOsmFileName(new Date("2026-10-25T22:51:48.321Z")),
+      "application/xml"
+    );
 
     expect(createObjectURL).toHaveBeenCalledOnce();
     expect(click).toHaveBeenCalledOnce();
-    expect(clickedDownload).toBe("orcaboros.osm");
+    expect(clickedDownload).toBe("orcaboros-2026-10-25T22-51Z.osm");
     expect(revokeObjectURL).not.toHaveBeenCalled();
 
     vi.runAllTimers();

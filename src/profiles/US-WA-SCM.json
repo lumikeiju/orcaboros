@@ -21,13 +21,19 @@
           "value": { "kind": "constant", "value": "bus_stop" },
           "appliesTo": { "locationKinds": ["platform"] }
         }
-      ]
+      ],
+      "removeKeys": ["gtfs:stop_id", "gtfs:stop_id:US-WA-SCM", "gtfs:feed"]
     }
   ],
   "mappingRules": [
     {
       "key": "name",
       "value": { "kind": "field", "field": "stop_name_expanded" }
+    },
+    {
+      "key": "gtfs:stop_code:US-WA-SCM",
+      "value": { "kind": "field", "field": "stop_code" },
+      "appliesTo": { "sourceFeedIds": ["US-WA-SCM"] }
     }
   ],
   "candidateRadiusMeters": 50,

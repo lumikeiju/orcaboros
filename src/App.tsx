@@ -75,7 +75,10 @@ import {
   createProgressThrottleState,
   shouldPublishProgress
 } from "./infrastructure/browser/progress";
-import { downloadTextFile } from "./infrastructure/browser/download";
+import {
+  createDefaultOsmFileName,
+  downloadTextFile
+} from "./infrastructure/browser/download";
 import { serializeJosmOsm } from "./infrastructure/osm/change-export";
 import {
   CONSOLIDATED_SOURCE_FEED_ID,
@@ -170,6 +173,7 @@ function outputMapping(
 export function App(): ReactElement {
   const [theme, setTheme] = useState<Theme>("dark");
   const [profile, setProfile] = useState<MappingProfile>(getDefaultProfile());
+  const [autoMatchedStockProfile, setAutoMatchedStockProfile] = useState(false);
   const [archives, setArchives] = useState<readonly SelectedArchive[]>([]);
   const [selectionErrors, setSelectionErrors] = useState<readonly string[]>([]);
   const [stops, setStops] = useState<readonly EligibleStop[]>([]);
@@ -188,9 +192,11 @@ export function App(): ReactElement {
     new Map()
   );
   const [focusedFeatureId, setFocusedFeatureId] = useState<string>();
+  const [reviewQueueFocusRequest, setReviewQueueFocusRequest] = useState(0);
   const [openWorkflowStep, setOpenWorkflowStep] = useState<
     WorkflowStepId | undefined
   >();
+  const [profileReviewed, setProfileReviewed] = useState(false);
   const [railWidth, setRailWidth] = useState(25);
   const [reviewHeight, setReviewHeight] = useState(46);
   const [endpoint, setEndpoint] = useState("");
@@ -415,6 +421,7 @@ export function App(): ReactElement {
       );
       await stageAndActivateSession(repository, stagedSession);
       const nextStops = imported.flatMap((item) => item.result.eligibleStops);
+      setProfileReviewed(false);
       setStops(nextStops);
       setFeedSummaries(imported.map((item) => item.result));
       setValidStopIds(
@@ -465,6 +472,8 @@ export function App(): ReactElement {
     nextArchives: readonly SelectedArchive[],
     errors: readonly string[]
   ): void {
+    setAutoMatchedStockProfile(false);
+    setProfileReviewed(false);
     setRetrievalComplete(false);
     setArchives(nextArchives);
     setSelectionErrors(errors);
@@ -480,10 +489,11 @@ export function App(): ReactElement {
         );
       if (selectableFeedIds.length > 0) {
         try {
-          const matchedProfile =
-            getProfileForFeedIds(selectableFeedIds) ??
-            createCustomProfileForFeedIds(selectableFeedIds);
-          void handleProfileChange(matchedProfile);
+          const matchedProfile = getProfileForFeedIds(selectableFeedIds);
+          void handleProfileChange(
+            matchedProfile ?? createCustomProfileForFeedIds(selectableFeedIds),
+            matchedProfile !== undefined
+          );
         } catch (caught: unknown) {
           const message =
             caught instanceof Error
@@ -876,7 +886,7 @@ export function App(): ReactElement {
       const draft = createDraft();
       const xml = serializeJosmOsm(draft);
       const activeSessionPromise = repository.getActiveSession();
-      downloadTextFile(xml, "orcaboros.osm", "application/xml");
+      downloadTextFile(xml, createDefaultOsmFileName(), "application/xml");
       const activeSession = await activeSessionPromise;
       if (activeSession === undefined) {
         throw new Error("The active GTFS session is no longer available");
@@ -905,6 +915,8 @@ export function App(): ReactElement {
     try {
       activeImportHandle.current?.cancel();
       await repository.resetActiveSession();
+      setProfileReviewed(false);
+      setAutoMatchedStockProfile(false);
       setArchives([]);
       setSelectionErrors([]);
       setStops([]);
@@ -952,8 +964,11 @@ export function App(): ReactElement {
   }
 
   async function handleProfileChange(
-    nextProfile: MappingProfile
+    nextProfile: MappingProfile,
+    isAutoMatchedStockProfile = false
   ): Promise<void> {
+    setProfileReviewed(false);
+    setAutoMatchedStockProfile(isAutoMatchedStockProfile);
     setProfile(nextProfile);
     const remapStop = (stop: EligibleStop): EligibleStop =>
       applyProfileStreetNameCleanup(nextProfile, stop);
@@ -1084,7 +1099,9 @@ export function App(): ReactElement {
             : { label: "Ready", kind: "ready" }
           : { label: "Start here", kind: "start" },
     profile: hasImportedStops
-      ? { label: "Ready", kind: "ready" }
+      ? profileReviewed
+        ? { label: "Reviewed", kind: "complete" }
+        : { label: "Ready", kind: "ready" }
       : { label: "Waiting", kind: "waiting" },
     retrieve: retrievalComplete
       ? { label: "Retrieved", kind: "complete" }
@@ -1117,16 +1134,22 @@ export function App(): ReactElement {
     document.getElementById(`workflow-step-${stepId}`)?.focus();
   }
 
+  function reviewProfileAndContinue(): void {
+    setProfileReviewed(true);
+    navigateToWorkflowStep("retrieve");
+  }
+
   function openReviewQueue(): void {
-    setFocusedFeatureId(
+    const firstFeatureId =
       firstUndecidedFeatureId({
         stops,
         nodes,
         reviews,
         validStopIds
-      })
-    );
-    navigateToWorkflowStep("review");
+      }) ?? stops[0]?.featureId;
+    setFocusedFeatureId(firstFeatureId);
+    setReviewQueueFocusRequest((request) => request + 1);
+    setOpenWorkflowStep("review");
     document
       .getElementById("review-step")
       ?.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -1276,9 +1299,9 @@ export function App(): ReactElement {
                 <button
                   type="button"
                   className="workflow-next-step glass-button--accent"
-                  onClick={() => navigateToWorkflowStep("retrieve")}
+                  onClick={() => navigateToWorkflowStep("profile")}
                 >
-                  Continue to OSM retrieval
+                  Continue to profile mapping
                 </button>
               )}
             </section>
@@ -1294,6 +1317,7 @@ export function App(): ReactElement {
           >
             <ProfileEditor
               profile={profile}
+              autoMatchedStockProfile={autoMatchedStockProfile}
               availableFields={availableFields}
               availableFieldsByFeed={
                 new Map(
@@ -1315,7 +1339,7 @@ export function App(): ReactElement {
               <button
                 type="button"
                 className="workflow-next-step glass-button--accent"
-                onClick={() => navigateToWorkflowStep("retrieve")}
+                onClick={reviewProfileAndContinue}
               >
                 Continue to OSM retrieval
               </button>
@@ -1458,10 +1482,10 @@ export function App(): ReactElement {
                 </p>
                 <button
                   type="button"
-                  className="secondary"
+                  className="workflow-next-step glass-button--accent"
                   onClick={openReviewQueue}
                 >
-                  Open review queue
+                  Open Review Queue
                 </button>
               </>
             )}
@@ -1569,7 +1593,7 @@ export function App(): ReactElement {
                     id={`workflow-step-${step.id}`}
                     className={`workflow-step-link${
                       currentWorkflowStep === step.id ? " is-active" : ""
-                    }`}
+                    }${stepStatus.kind === "start" ? " is-start" : ""}`}
                     type="button"
                     aria-label={`${step.number} ${step.label} ${step.detail}. ${stepStatus.label}`}
                     aria-current={
@@ -1651,6 +1675,7 @@ export function App(): ReactElement {
               exactMatchRadiusMeters={profile.autoIdRadiusMeters}
               focusedFeatureId={focusedFeatureId}
               onFeatureClick={setFocusedFeatureId}
+              onAction={applyAction}
               theme={theme}
               styleUrl={styleUrl.length > 0 ? styleUrl : undefined}
             />
@@ -1686,6 +1711,7 @@ export function App(): ReactElement {
                 exactMatchRadiusMeters={profile.autoIdRadiusMeters}
                 onAction={applyAction}
                 focusedFeatureId={focusedFeatureId}
+                focusRequest={reviewQueueFocusRequest}
                 onFocusFeature={setFocusedFeatureId}
               />
             </section>

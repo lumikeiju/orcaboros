@@ -189,7 +189,7 @@ describe("ProfileEditor", () => {
     if (profile === undefined) {
       throw new Error("combined fixture profile is missing");
     }
-    render(
+    const { container } = render(
       <ProfileEditor
         profile={profile}
         availableFieldsByFeed={
@@ -212,6 +212,13 @@ describe("ProfileEditor", () => {
       screen.getByLabelText("OSM tag key for US-WA-KCM stop_id")
     ).toHaveValue("");
     expect(
+      Array.from(
+        container.querySelectorAll<HTMLDetailsElement>(
+          "details.profile-feed-section"
+        )
+      ).every((section) => section.open)
+    ).toBe(true);
+    expect(
       screen.getByLabelText("OSM tag key for US-WA-ST stop_id")
     ).toHaveValue("");
     expect(
@@ -220,6 +227,36 @@ describe("ProfileEditor", () => {
     expect(
       screen.getByLabelText("OSM tag key for US-WA-ST st_zone")
     ).toBeInTheDocument();
+  });
+
+  it("collapses and labels sections for an auto-matched stock profile", () => {
+    const profile = getProfileForFeedIds(["US-WA-KCM", "US-WA-ST"]);
+    if (profile === undefined) {
+      throw new Error("combined fixture profile is missing");
+    }
+    const { container } = render(
+      <ProfileEditor
+        profile={profile}
+        autoMatchedStockProfile
+        uploadedFeedIds={["US-WA-KCM", "US-WA-ST"]}
+        onChange={vi.fn()}
+        onReset={vi.fn()}
+      />
+    );
+    const feedSections = container.querySelectorAll<HTMLDetailsElement>(
+      "details.profile-feed-section"
+    );
+
+    expect(feedSections).toHaveLength(2);
+    expect(Array.from(feedSections).every((section) => !section.open)).toBe(
+      true
+    );
+    expect(screen.getAllByText("Auto-matched")).toHaveLength(2);
+    for (const section of Array.from(feedSections)) {
+      expect(
+        section.querySelector(".profile-feed-auto-matched")
+      ).toHaveTextContent("Auto-matched");
+    }
   });
 
   it("shows feed sections only for imported matching feeds", () => {
@@ -331,11 +368,16 @@ describe("ProfileEditor", () => {
         sourceFeeds: [
           expect.objectContaining({
             id: "US-WA-KCM",
-            removeKeys: []
+            removeKeys: ["gtfs:stop_id", "gtfs:stop_id:US-WA-KCM", "gtfs:feed"]
           }),
           expect.objectContaining({
             id: "US-WA-ST",
-            removeKeys: [""]
+            removeKeys: [
+              "gtfs:stop_id",
+              "gtfs:stop_id:US-WA-ST",
+              "gtfs:feed",
+              ""
+            ]
           })
         ]
       })

@@ -1,9 +1,27 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { Blob as NodeBlob } from "node:buffer";
+import { strToU8, zipSync } from "fflate";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { STOCK_SOURCE_FEED_DEFINITIONS } from "../../src/domain/source-feed";
+import { importGtfsArchive } from "../../src/infrastructure/gtfs/importer";
 import { App } from "../../src/App";
 import packageMetadata from "../../package.json";
 
-afterEach(() => cleanup());
+const importWorker = vi.hoisted(() => ({
+  startArchiveImport: vi.fn()
+}));
+
+vi.mock("../../src/components/MapView", () => ({
+  MapView: () => null
+}));
+vi.mock("../../src/features/import/worker-client", () => ({
+  startArchiveImport: importWorker.startArchiveImport
+}));
+
+afterEach(() => {
+  cleanup();
+  importWorker.startArchiveImport.mockReset();
+});
 
 function openUploadStep(): void {
   fireEvent.click(
@@ -123,7 +141,9 @@ describe("App workflow sidebar", () => {
   it("shows step readiness without disabling out-of-order navigation", () => {
     render(<App />);
 
-    expect(screen.getByText("Start here")).toBeInTheDocument();
+    const startStatus = screen.getByText("Start here");
+    expect(startStatus).toBeInTheDocument();
+    expect(startStatus.closest("button")).toHaveClass("is-start");
     expect(
       screen.getByRole("button", {
         name: "2 Profile Review field mappings. Waiting"
@@ -149,6 +169,63 @@ describe("App workflow sidebar", () => {
         name: /3 Retrieve Retrieve OSM data/
       })
     ).not.toBeDisabled();
+  });
+
+  it("continues from upload to profile before OSM retrieval", async () => {
+    const zip = zipSync({
+      "stops.txt": strToU8(
+        "stop_id,stop_name,stop_lat,stop_lon\nstop-1,Test Stop,47.61,-122.33\n"
+      )
+    });
+    const imported = await importGtfsArchive(
+      Object.assign(new NodeBlob([zip]), { name: "US-WA-KCM.zip" }),
+      { definitions: STOCK_SOURCE_FEED_DEFINITIONS }
+    );
+    importWorker.startArchiveImport.mockReturnValue({
+      promise: Promise.resolve(imported),
+      cancel: () => undefined
+    });
+
+    const { container } = render(<App />);
+    openUploadStep();
+
+    const archive = new File([zip], "US-WA-KCM.zip", {
+      type: "application/zip"
+    });
+    fireEvent.change(screen.getByLabelText("Choose or drop GTFS ZIPs"), {
+      target: { files: [archive] }
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "Process selected GTFS ZIPs" })
+    );
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Continue to profile mapping" })
+    );
+    const profileStep = screen.getByRole("button", {
+      name: /2 Profile Review field mappings/
+    });
+    expect(profileStep).toHaveAttribute("aria-expanded", "true");
+    expect(profileStep).toHaveAttribute("aria-current", "step");
+    expect(profileStep).toHaveTextContent("Ready");
+    const autoMatchedFeedSection = container.querySelector<HTMLDetailsElement>(
+      "details.profile-feed-section"
+    );
+    expect(autoMatchedFeedSection?.open).toBe(false);
+    expect(screen.getByText("Auto-matched")).toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Continue to OSM retrieval" })
+    );
+    expect(profileStep).toHaveTextContent("Reviewed");
+    expect(profileStep).toHaveAccessibleName(
+      "2 Profile Review field mappings. Reviewed"
+    );
+    const retrieveStep = screen.getByRole("button", {
+      name: /3 Retrieve Retrieve OSM data/
+    });
+    expect(retrieveStep).toHaveAttribute("aria-expanded", "true");
+    expect(retrieveStep).toHaveAttribute("aria-current", "step");
   });
 
   it("resizes the sidebar and review panel with keyboard controls", () => {

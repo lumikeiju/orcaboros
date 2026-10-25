@@ -82,13 +82,32 @@ describe("source-feed identity", () => {
     }
   });
 
-  it("maps Everett Transit stop codes to the OSM ref tag", () => {
+  it("maps Everett Transit stop codes to a feed-specific GTFS tag", () => {
     const profile = getProfileForFeedId("US-WA-ET");
     expect(profile?.mappingRules).toContainEqual({
-      key: "ref",
+      key: "gtfs:stop_code:US-WA-ET",
       value: { kind: "field", field: "stop_code" },
       appliesTo: { sourceFeedIds: ["US-WA-ET"] }
     });
+  });
+
+  it("maps stop codes and removes legacy GTFS tags in every stock profile", () => {
+    for (const source of STOCK_SOURCE_FEED_DEFINITIONS) {
+      const profile = getProfileForFeedId(source.id);
+      if (profile === undefined) {
+        throw new Error(`stock profile is missing for ${source.id}`);
+      }
+      expect(profile.mappingRules).toContainEqual({
+        key: `gtfs:stop_code:${source.id}`,
+        value: { kind: "field", field: "stop_code" },
+        appliesTo: { sourceFeedIds: [source.id] }
+      });
+      expect(profile.sourceFeeds[0]?.removeKeys).toEqual([
+        "gtfs:stop_id",
+        `gtfs:stop_id:${source.id}`,
+        "gtfs:feed"
+      ]);
+    }
   });
 
   it("maps the cleaned GTFS stop name to the OSM name tag for every stock profile", () => {

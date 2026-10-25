@@ -4,17 +4,23 @@ import type {
   GeoJSONSource,
   Map as MapLibreMap,
   MapLayerMouseEvent,
-  Popup as MapLibrePopup
+  Popup as MapLibrePopup,
+  PositionAnchor
 } from "maplibre-gl";
 import type { EligibleStop } from "../domain/gtfs";
 import type { CandidateMatch, InitialMatch } from "../domain/matching";
 import {
   elementKey,
   isOsmWay,
+  osmElementRef,
   type OsmElement,
   type OsmTagSet
 } from "../domain/osm";
-import { selectedElementRef, type FeatureReview } from "../domain/review";
+import {
+  selectedElementRef,
+  type FeatureReview,
+  type ReviewAction
+} from "../domain/review";
 import { identityTagKey } from "../domain/source-feed";
 
 export const MAP_STYLE_URLS = {
@@ -64,6 +70,7 @@ type MapViewProps = {
   exactMatchRadiusMeters?: number;
   focusedFeatureId?: string;
   onFeatureClick?: (featureId: string) => void;
+  onAction?: (featureId: string, action: ReviewAction) => void;
   styleUrl?: string;
   theme?: Theme;
 };
@@ -92,6 +99,8 @@ const HEATMAP_KINDS: readonly MapMarkerKind[] = [
   "removed"
 ];
 const DETAIL_ZOOM = 11;
+const ALL_CONNECTIONS_MIN_ZOOM = 0;
+const LINK_SNAP_RADIUS_PIXELS = 24;
 const EMPTY_MAPPED_TAGS: ReadonlyMap<string, OsmTagSet> = new Map();
 
 export function shouldShowZoomNotice(zoom: number): boolean {
@@ -388,7 +397,14 @@ type MapData = {
   candidateNodes: readonly OsmElement[];
   focusedFeatureId: string | undefined;
   focusedCandidateNodeHighlights: ReadonlyMap<string, MapHighlightRole>;
+  allConnectionFeatures: ReturnType<typeof allConnectionFeatures>;
   connectionFeatures: ReturnType<typeof focusedCandidateConnectionFeatures>;
+};
+
+type LinkChangeControls = {
+  featureId: string;
+  button: HTMLButtonElement;
+  status: HTMLElement;
 };
 
 type MapFeatureCollection = Parameters<GeoJSONSource["setData"]>[0];
@@ -421,9 +437,16 @@ export function getRelatedFeatureIdForOsmElement(
   focusedFeatureId?: string
 ): string | undefined {
   const targetElementKey = elementKey(element);
-  const relatedStops = stops.filter((stop) =>
-    candidateMatchesElement(matches.get(stop.featureId), targetElementKey)
-  );
+  const relatedStops = stops.filter((stop) => {
+    const review = reviews.get(stop.featureId);
+    const selectedElement =
+      review === undefined ? undefined : selectedElementRef(review);
+    return (
+      candidateMatchesElement(matches.get(stop.featureId), targetElementKey) ||
+      (selectedElement !== undefined &&
+        elementKey(selectedElement) === targetElementKey)
+    );
+  });
   const focusedStop = relatedStops.find(
     (stop) => stop.featureId === focusedFeatureId
   );
@@ -439,35 +462,167 @@ export function getRelatedFeatureIdForOsmElement(
   return selectedStop?.featureId ?? relatedStops[0]?.featureId;
 }
 
+type MapScreenPoint = Readonly<{ x: number; y: number }>;
+
+function findNearbyCandidateCoordinate(
+  instance: MapLibreMap,
+  point: MapScreenPoint
+): readonly [number, number] | undefined {
+  const radius = LINK_SNAP_RADIUS_PIXELS;
+  const bounds: [[number, number], [number, number]] = [
+    [point.x - radius, point.y - radius],
+    [point.x + radius, point.y + radius]
+  ];
+  let nearestCoordinate: readonly [number, number] | undefined;
+  let nearestDistanceSquared = radius * radius;
+  for (const feature of instance.queryRenderedFeatures(bounds, {
+    layers: ["osm-candidates"]
+  })) {
+    if (feature.geometry.type !== "Point") {
+      continue;
+    }
+    const longitude = feature.geometry.coordinates[0];
+    const latitude = feature.geometry.coordinates[1];
+    if (longitude === undefined || latitude === undefined) {
+      continue;
+    }
+    const coordinate: [number, number] = [longitude, latitude];
+    const candidatePoint = instance.project(coordinate);
+    const horizontalDistance = candidatePoint.x - point.x;
+    const verticalDistance = candidatePoint.y - point.y;
+    const distanceSquared =
+      horizontalDistance * horizontalDistance +
+      verticalDistance * verticalDistance;
+    if (
+      !Number.isFinite(distanceSquared) ||
+      distanceSquared >= nearestDistanceSquared
+    ) {
+      continue;
+    }
+    nearestCoordinate = coordinate;
+    nearestDistanceSquared = distanceSquared;
+  }
+  return nearestCoordinate;
+}
+
+function getLinkPreviewCoordinate(
+  instance: MapLibreMap,
+  point: MapScreenPoint | undefined,
+  cursorCoordinate: readonly [number, number] | undefined
+): readonly [number, number] | undefined {
+  return point === undefined
+    ? cursorCoordinate
+    : (findNearbyCandidateCoordinate(instance, point) ?? cursorCoordinate);
+}
+
+export function getPopupAnchorAwayFromRelatedFeature(
+  clickedPoint: MapScreenPoint,
+  relatedPoint: MapScreenPoint | undefined
+): PositionAnchor | undefined {
+  if (relatedPoint === undefined) {
+    return undefined;
+  }
+
+  const horizontalDistance = relatedPoint.x - clickedPoint.x;
+  const verticalDistance = relatedPoint.y - clickedPoint.y;
+  if (horizontalDistance === 0 && verticalDistance === 0) {
+    return undefined;
+  }
+  if (Math.abs(horizontalDistance) >= Math.abs(verticalDistance)) {
+    return horizontalDistance > 0 ? "right" : "left";
+  }
+  return verticalDistance > 0 ? "bottom" : "top";
+}
+
+function getPopupMaxHeight(
+  canvasHeight: number,
+  clickedY: number,
+  anchor: PositionAnchor | undefined
+): number {
+  const topSpace = clickedY;
+  const bottomSpace = canvasHeight - clickedY;
+  const availableHeight =
+    anchor === "bottom"
+      ? topSpace
+      : anchor === "top"
+        ? bottomSpace
+        : anchor === undefined
+          ? Math.max(topSpace, bottomSpace)
+          : Math.min(topSpace, bottomSpace) * 2;
+  return Math.max(96, Math.min(352, Math.floor(availableHeight) - 32));
+}
+
+function popupTagPriority(key: string): number {
+  if (key === "ref" || key.startsWith("ref:")) {
+    return 0;
+  }
+  if (key === "gtfs:stop_code" || key.startsWith("gtfs:stop_code:")) {
+    return 1;
+  }
+  if (key === "name") {
+    return 2;
+  }
+  if (key === "gtfs:stop_id" || key.startsWith("gtfs:stop_id:")) {
+    return 3;
+  }
+  return 4;
+}
+
 export function createMapPopupContent(
   title: string,
   tags: OsmTagSet,
   tagLabel: string,
-  description?: string
+  dataLabel: "GTFS Data" | "OSM Data",
+  description?: string,
+  showChangeLink = false
 ): HTMLElement {
   const content = document.createElement("div");
-  content.className = "map-feature-popup glass-scrollbar";
+  content.className = "map-feature-popup";
   content.setAttribute("role", "group");
-  content.setAttribute("aria-label", `${title} tags`);
+  content.setAttribute("aria-label", `${dataLabel}: ${title} tags`);
 
+  const header = document.createElement("div");
+  header.className = "map-feature-popup-header";
+  header.textContent = dataLabel;
+  content.append(header);
+
+  const bodyContent = document.createElement("div");
+  bodyContent.className = "map-feature-popup-body glass-scrollbar";
   const heading = document.createElement("h3");
   heading.textContent = title;
-  content.append(heading);
+  bodyContent.append(heading);
 
   if (description !== undefined) {
     const detail = document.createElement("p");
     detail.className = "map-feature-popup-detail";
     detail.textContent = description;
-    content.append(detail);
+    bodyContent.append(detail);
   }
 
-  const entries = Object.entries(tags).sort(([left], [right]) =>
-    left.localeCompare(right)
+  if (showChangeLink) {
+    const changeLinkButton = document.createElement("button");
+    changeLinkButton.type = "button";
+    changeLinkButton.className =
+      "map-feature-popup-change-link glass-button glass-button--accent";
+    changeLinkButton.setAttribute("aria-pressed", "false");
+    changeLinkButton.textContent = "Change Link";
+    const linkStatus = document.createElement("p");
+    linkStatus.className = "map-feature-popup-link-status";
+    linkStatus.setAttribute("role", "status");
+    linkStatus.setAttribute("aria-live", "polite");
+    bodyContent.append(changeLinkButton, linkStatus);
+  }
+
+  const entries = Object.entries(tags).sort(
+    ([left], [right]) =>
+      popupTagPriority(left) - popupTagPriority(right) ||
+      left.localeCompare(right)
   );
   if (entries.length === 0) {
     const emptyMessage = document.createElement("p");
     emptyMessage.textContent = "No tags.";
-    content.append(emptyMessage);
+    bodyContent.append(emptyMessage);
+    content.append(bodyContent);
     return content;
   }
 
@@ -487,7 +642,8 @@ export function createMapPopupContent(
     body.append(row);
   }
   table.append(body);
-  content.append(table);
+  bodyContent.append(table);
+  content.append(bodyContent);
   return content;
 }
 
@@ -530,11 +686,22 @@ function candidateFeatures(
   }));
 }
 
+function getPrimaryCandidateNode(
+  candidateNodes: readonly OsmElement[],
+  focusedNodeHighlights: ReadonlyMap<string, MapHighlightRole>
+): OsmElement | undefined {
+  return candidateNodes.find(
+    (candidate) =>
+      focusedNodeHighlights.get(elementKey(candidate)) === "primary"
+  );
+}
+
 function focusedCandidateConnectionFeatures(
   stops: readonly EligibleStop[],
   candidateNodes: readonly OsmElement[],
   focusedFeatureId: string | undefined,
-  focusedNodeHighlights: ReadonlyMap<string, MapHighlightRole>
+  focusedNodeHighlights: ReadonlyMap<string, MapHighlightRole>,
+  linkChangeFeatureId: string | undefined
 ) {
   if (focusedFeatureId === undefined) {
     return [];
@@ -542,9 +709,9 @@ function focusedCandidateConnectionFeatures(
   const stop = stops.find(
     (candidate) => candidate.featureId === focusedFeatureId
   );
-  const primaryCandidate = candidateNodes.find(
-    (candidate) =>
-      focusedNodeHighlights.get(elementKey(candidate)) === "primary"
+  const primaryCandidate = getPrimaryCandidateNode(
+    candidateNodes,
+    focusedNodeHighlights
   );
   if (stop === undefined || primaryCandidate === undefined) {
     return [];
@@ -560,7 +727,77 @@ function focusedCandidateConnectionFeatures(
         ]
       },
       properties: {
-        id: `${stop.featureId}:${elementKey(primaryCandidate)}`
+        id: `${stop.featureId}:${elementKey(primaryCandidate)}`,
+        changingLink: stop.featureId === linkChangeFeatureId
+      }
+    }
+  ];
+}
+
+function allConnectionFeatures(
+  stops: readonly EligibleStop[],
+  candidateNodes: readonly OsmElement[],
+  matches: ReadonlyMap<string, InitialMatch>,
+  reviews: ReadonlyMap<string, FeatureReview>,
+  linkChangeFeatureId: string | undefined
+) {
+  const nodesByKey = new Map(
+    candidateNodes.map((node) => [elementKey(node), node])
+  );
+  return stops.flatMap((stop) => {
+    const review = reviews.get(stop.featureId);
+    if (review?.state === "create-selected" || review?.state === "skipped") {
+      return [];
+    }
+    const primaryCandidateKey = Array.from(
+      getFocusedCandidateNodeHighlights(stop.featureId, matches, reviews)
+    ).find(([, highlight]) => highlight === "primary")?.[0];
+    const element =
+      primaryCandidateKey === undefined
+        ? undefined
+        : nodesByKey.get(primaryCandidateKey);
+    if (element === undefined) {
+      return [];
+    }
+    return [
+      {
+        type: "Feature" as const,
+        geometry: {
+          type: "LineString" as const,
+          coordinates: [
+            [stop.longitude, stop.latitude],
+            [element.longitude, element.latitude]
+          ]
+        },
+        properties: {
+          id: `${stop.featureId}:${elementKey(element)}`,
+          featureId: stop.featureId,
+          changingLink: stop.featureId === linkChangeFeatureId
+        }
+      }
+    ];
+  });
+}
+
+function proposedConnectionFeatures(
+  stop: EligibleStop | undefined,
+  cursorPosition: readonly [number, number] | undefined
+) {
+  if (stop === undefined || cursorPosition === undefined) {
+    return [];
+  }
+  return [
+    {
+      type: "Feature" as const,
+      geometry: {
+        type: "LineString" as const,
+        coordinates: [
+          [stop.longitude, stop.latitude],
+          [cursorPosition[0], cursorPosition[1]]
+        ]
+      },
+      properties: {
+        id: `link-preview:${stop.featureId}`
       }
     }
   ];
@@ -685,19 +922,31 @@ export function getFocusedCandidateNodeHighlights(
     return new Map();
   }
   const result = matches.get(focusedFeatureId);
-  if (result?.kind === "auto-matched") {
-    return new Map([[elementKey(result.candidate.node), "primary"]]);
-  }
-  if (result?.kind !== "review") {
-    return new Map();
-  }
-  const selectedElement = selectedElementRef(
-    reviews.get(focusedFeatureId) ?? {
-      selectedNodeId: undefined
-    }
-  );
+  const review = reviews.get(focusedFeatureId);
+  const selectedElement =
+    review === undefined ? undefined : selectedElementRef(review);
   const selectedElementKey =
     selectedElement === undefined ? undefined : elementKey(selectedElement);
+  if (result?.kind === "auto-matched") {
+    const candidateKey = elementKey(result.candidate.node);
+    const highlights = new Map<string, MapHighlightRole>([
+      [
+        candidateKey,
+        selectedElementKey === undefined || selectedElementKey === candidateKey
+          ? "primary"
+          : "alternative"
+      ]
+    ]);
+    if (selectedElementKey !== undefined) {
+      highlights.set(selectedElementKey, "primary");
+    }
+    return highlights;
+  }
+  if (result?.kind !== "review") {
+    return selectedElementKey === undefined
+      ? new Map()
+      : new Map<string, MapHighlightRole>([[selectedElementKey, "primary"]]);
+  }
   const closestCandidate = [...result.candidates].sort(
     (left, right) =>
       left.distanceMeters - right.distanceMeters ||
@@ -776,6 +1025,27 @@ function updateMatchConnectionSource(
   updateMapSource(instance, "map-match-connections", {
     type: "FeatureCollection",
     features
+  });
+}
+
+function updateAllConnectionSource(
+  instance: MapLibreMap,
+  features: ReturnType<typeof allConnectionFeatures>
+): void {
+  updateMapSource(instance, "map-all-connections", {
+    type: "FeatureCollection",
+    features
+  });
+}
+
+function updateProposedConnectionSource(
+  instance: MapLibreMap,
+  stop: EligibleStop | undefined,
+  cursorPosition: readonly [number, number] | undefined
+): void {
+  updateMapSource(instance, "map-link-preview", {
+    type: "FeatureCollection",
+    features: proposedConnectionFeatures(stop, cursorPosition)
   });
 }
 
@@ -881,6 +1151,10 @@ export function MapLegend(): ReactElement {
           Alternative candidates (2+)
         </li>
         <li>
+          <span className="map-legend-connection is-all" aria-hidden="true" />
+          All connections
+        </li>
+        <li>
           <span className="map-legend-connection" aria-hidden="true" />
           Focused stop-to-candidate link
         </li>
@@ -902,6 +1176,7 @@ export function MapView({
   mappedTagsByFeature = EMPTY_MAPPED_TAGS,
   exactMatchRadiusMeters = Number.POSITIVE_INFINITY,
   focusedFeatureId,
+  onAction,
   onFeatureClick,
   styleUrl,
   theme = "dark"
@@ -912,6 +1187,15 @@ export function MapView({
   const mapLoaded = useRef(false);
   const attributionExpanded = useRef(true);
   const [showZoomNotice, setShowZoomNotice] = useState(false);
+  const [linkChangeFeatureId, setLinkChangeFeatureId] = useState<string>();
+  const linkChangeFeatureIdRef = useRef<string | undefined>(undefined);
+  const lastCursorCoordinateRef = useRef<readonly [number, number] | undefined>(
+    undefined
+  );
+  const lastCursorPointRef = useRef<MapScreenPoint | undefined>(undefined);
+  const linkChangeControlsRef = useRef<LinkChangeControls | undefined>(
+    undefined
+  );
   const derivedMapData = buildMapMarkers(
     stops,
     nodes,
@@ -920,16 +1204,25 @@ export function MapView({
     validStopIds,
     exactMatchRadiusMeters
   );
+  const connectionFocusFeatureId = linkChangeFeatureId ?? focusedFeatureId;
   const focusedCandidateNodeHighlights = getFocusedCandidateNodeHighlights(
-    focusedFeatureId,
+    connectionFocusFeatureId,
     matches,
     reviews
   );
   const connectionFeatures = focusedCandidateConnectionFeatures(
     stops,
     derivedMapData.candidateNodes,
-    focusedFeatureId,
-    focusedCandidateNodeHighlights
+    connectionFocusFeatureId,
+    focusedCandidateNodeHighlights,
+    linkChangeFeatureId
+  );
+  const allConnections = allConnectionFeatures(
+    stops,
+    derivedMapData.candidateNodes,
+    matches,
+    reviews,
+    linkChangeFeatureId
   );
   const mapData = useRef<MapData>({
     nodes,
@@ -941,10 +1234,12 @@ export function MapView({
     candidateNodes: derivedMapData.candidateNodes,
     focusedFeatureId,
     focusedCandidateNodeHighlights,
+    allConnectionFeatures: allConnections,
     connectionFeatures
   });
   const focusedFeatureIdRef = useRef(focusedFeatureId);
   const onFeatureClickRef = useRef(onFeatureClick);
+  const onActionRef = useRef(onAction);
   mapData.current = {
     nodes,
     stops,
@@ -955,10 +1250,12 @@ export function MapView({
     candidateNodes: derivedMapData.candidateNodes,
     focusedFeatureId,
     focusedCandidateNodeHighlights,
+    allConnectionFeatures: allConnections,
     connectionFeatures
   };
   focusedFeatureIdRef.current = focusedFeatureId;
   onFeatureClickRef.current = onFeatureClick;
+  onActionRef.current = onAction;
 
   useEffect(() => {
     let disposed = false;
@@ -966,6 +1263,7 @@ export function MapView({
     let attributionControl: HTMLDetailsElement | null = null;
     let attributionToggle: HTMLElement | null = null;
     let handleAttributionToggle: (() => void) | undefined;
+    let handleLinkChangeKeyDown: ((event: KeyboardEvent) => void) | undefined;
     setShowZoomNotice(false);
     mapLoaded.current = false;
     void import("maplibre-gl").then((module) => {
@@ -986,6 +1284,40 @@ export function MapView({
         attributionControl: { compact: true }
       });
       map.current = instance;
+      const updateLinkChangeControls = (
+        featureId: string,
+        active: boolean,
+        message = ""
+      ): void => {
+        const controls = linkChangeControlsRef.current;
+        if (controls?.featureId !== featureId) {
+          return;
+        }
+        controls.button.textContent = active ? "Cancel Link" : "Change Link";
+        controls.button.setAttribute("aria-pressed", String(active));
+        controls.status.textContent = active ? message : "";
+      };
+      const cancelLinkChange = (): void => {
+        const featureId = linkChangeFeatureIdRef.current;
+        if (featureId === undefined) {
+          return;
+        }
+        linkChangeFeatureIdRef.current = undefined;
+        setLinkChangeFeatureId(undefined);
+        updateLinkChangeControls(featureId, false);
+        updateProposedConnectionSource(instance, undefined, undefined);
+        instance.getCanvas().style.cursor = "";
+      };
+      handleLinkChangeKeyDown = (event): void => {
+        if (
+          event.key === "Escape" &&
+          linkChangeFeatureIdRef.current !== undefined
+        ) {
+          event.preventDefault();
+          cancelLinkChange();
+        }
+      };
+      document.addEventListener("keydown", handleLinkChangeKeyDown);
       attributionControl = mapContainer.querySelector<HTMLDetailsElement>(
         ".maplibregl-ctrl-attrib"
       );
@@ -1062,8 +1394,73 @@ export function MapView({
             features: mapData.current.connectionFeatures
           }
         });
+        instance.addSource("map-all-connections", {
+          type: "geojson",
+          data: {
+            type: "FeatureCollection",
+            features: mapData.current.allConnectionFeatures
+          }
+        });
+        instance.addSource("map-link-preview", {
+          type: "geojson",
+          data: {
+            type: "FeatureCollection",
+            features: proposedConnectionFeatures(
+              mapData.current.stops.find(
+                (stop) => stop.featureId === linkChangeFeatureIdRef.current
+              ),
+              lastCursorCoordinateRef.current
+            )
+          }
+        });
         addStatusHeatmapLayers(instance, labelLayerId);
         addFocusHaloLayers(instance, labelLayerId);
+        instance.addLayer(
+          {
+            id: "map-all-connections-casing",
+            type: "line",
+            source: "map-all-connections",
+            minzoom: ALL_CONNECTIONS_MIN_ZOOM,
+            layout: {
+              "line-cap": "round",
+              "line-join": "round"
+            },
+            paint: {
+              "line-color": "#0C1519",
+              "line-opacity": [
+                "case",
+                ["boolean", ["get", "changingLink"], false],
+                0.18,
+                0.82
+              ],
+              "line-width": 4
+            }
+          },
+          labelLayerId
+        );
+        instance.addLayer(
+          {
+            id: "map-all-connections",
+            type: "line",
+            source: "map-all-connections",
+            minzoom: ALL_CONNECTIONS_MIN_ZOOM,
+            layout: {
+              "line-cap": "round",
+              "line-join": "round"
+            },
+            paint: {
+              "line-color": readSelectionHighlightColor(),
+              "line-opacity": [
+                "case",
+                ["boolean", ["get", "changingLink"], false],
+                0.24,
+                0.86
+              ],
+              "line-width": 2
+            }
+          },
+          labelLayerId
+        );
         instance.addLayer(
           {
             id: "map-match-connection-casing",
@@ -1076,7 +1473,12 @@ export function MapView({
             },
             paint: {
               "line-color": "#0C1519",
-              "line-opacity": 0.9,
+              "line-opacity": [
+                "case",
+                ["boolean", ["get", "changingLink"], false],
+                0.18,
+                0.9
+              ],
               "line-width": 5
             }
           },
@@ -1094,9 +1496,33 @@ export function MapView({
             },
             paint: {
               "line-color": readSelectionHighlightColor(),
-              "line-opacity": 0.95,
+              "line-opacity": [
+                "case",
+                ["boolean", ["get", "changingLink"], false],
+                0.24,
+                0.95
+              ],
               "line-width": 2.5,
               "line-dasharray": [2, 1.5]
+            }
+          },
+          labelLayerId
+        );
+        instance.addLayer(
+          {
+            id: "map-link-preview",
+            type: "line",
+            source: "map-link-preview",
+            minzoom: DETAIL_ZOOM,
+            layout: {
+              "line-cap": "round",
+              "line-join": "round"
+            },
+            paint: {
+              "line-color": readSelectionHighlightColor(),
+              "line-opacity": 0.95,
+              "line-width": 3,
+              "line-dasharray": [1, 1]
             }
           },
           labelLayerId
@@ -1206,12 +1632,30 @@ export function MapView({
           ) {
             return;
           }
+          lastCursorCoordinateRef.current = [
+            event.lngLat.lng,
+            event.lngLat.lat
+          ];
+          lastCursorPointRef.current = {
+            x: event.point.x,
+            y: event.point.y
+          };
+          const pendingLinkFeatureId = linkChangeFeatureIdRef.current;
+          if (
+            pendingLinkFeatureId !== undefined &&
+            clickedLayer !== "osm-candidates"
+          ) {
+            cancelLinkChange();
+          }
           const currentData = mapData.current;
           let title: string;
           let tags: OsmTagSet;
           let tagLabel: string;
+          let dataLabel: "GTFS Data" | "OSM Data";
           let description: string | undefined;
           let reviewFeatureId: string | undefined;
+          let relatedStop: EligibleStop | undefined;
+          let relatedCoordinates: [number, number] | undefined;
           if (clickedLayer === "osm-candidates") {
             const element = currentData.candidateNodes.find(
               (node) => elementKey(node) === clickedId
@@ -1222,16 +1666,42 @@ export function MapView({
             title = `OSM ${isOsmWay(element) ? "way" : "node"} ${element.id}`;
             tags = element.tags;
             tagLabel = "OSM tags";
-            reviewFeatureId = getRelatedFeatureIdForOsmElement(
-              element,
-              currentData.stops,
-              currentData.matches,
-              currentData.reviews,
-              currentData.focusedFeatureId
-            );
-            const relatedStop = currentData.stops.find(
-              (stop) => stop.featureId === reviewFeatureId
-            );
+            dataLabel = "OSM Data";
+            if (pendingLinkFeatureId !== undefined) {
+              relatedStop = currentData.stops.find(
+                (stop) => stop.featureId === pendingLinkFeatureId
+              );
+              const onAction = onActionRef.current;
+              if (relatedStop === undefined || onAction === undefined) {
+                const controls = linkChangeControlsRef.current;
+                if (controls?.featureId === pendingLinkFeatureId) {
+                  controls.status.textContent =
+                    "The link could not be changed. Choose another OSM element or press Escape to cancel.";
+                }
+                return;
+              }
+              onAction(pendingLinkFeatureId, {
+                type: "select-element",
+                element: osmElementRef(element)
+              });
+              reviewFeatureId = pendingLinkFeatureId;
+              cancelLinkChange();
+            } else {
+              reviewFeatureId = getRelatedFeatureIdForOsmElement(
+                element,
+                currentData.stops,
+                currentData.matches,
+                currentData.reviews,
+                currentData.focusedFeatureId
+              );
+              relatedStop = currentData.stops.find(
+                (stop) => stop.featureId === reviewFeatureId
+              );
+            }
+            relatedCoordinates =
+              relatedStop === undefined
+                ? undefined
+                : [relatedStop.longitude, relatedStop.latitude];
             description =
               relatedStop === undefined
                 ? "No review item is linked to this OSM element."
@@ -1254,6 +1724,7 @@ export function MapView({
               title = `OSM ${isOsmWay(element) ? "way" : "node"} ${element.id}`;
               tags = element.tags;
               tagLabel = "OSM tags";
+              dataLabel = "OSM Data";
             } else {
               const stop = currentData.stops.find(
                 (candidate) => candidate.featureId === marker.id
@@ -1261,9 +1732,22 @@ export function MapView({
               if (stop === undefined) {
                 return;
               }
-              title = `GTFS stop: ${stop.stopNameExpanded}`;
+              title = stop.stopNameExpanded;
               tags = currentData.mappedTagsByFeature.get(stop.featureId) ?? {};
               tagLabel = "Profile-mapped tags";
+              dataLabel = "GTFS Data";
+              const primaryCandidate = getPrimaryCandidateNode(
+                currentData.candidateNodes,
+                getFocusedCandidateNodeHighlights(
+                  marker.id,
+                  currentData.matches,
+                  currentData.reviews
+                )
+              );
+              relatedCoordinates =
+                primaryCandidate === undefined
+                  ? undefined
+                  : [primaryCandidate.longitude, primaryCandidate.latitude];
             }
           }
           if (reviewFeatureId !== undefined) {
@@ -1271,32 +1755,126 @@ export function MapView({
           }
           activePopup?.remove();
           const canvasHeight = instance.getCanvas().clientHeight;
+          const relatedPoint =
+            relatedCoordinates === undefined
+              ? undefined
+              : instance.project(relatedCoordinates);
+          const popupAnchor = getPopupAnchorAwayFromRelatedFeature(
+            event.point,
+            relatedPoint
+          );
           const popupContent = createMapPopupContent(
             title,
             tags,
             tagLabel,
-            description
+            dataLabel,
+            description,
+            dataLabel === "GTFS Data" && onActionRef.current !== undefined
           );
-          popupContent.style.maxHeight = `${Math.max(
-            96,
-            Math.min(352, Math.floor(canvasHeight / 2) - 48)
+          linkChangeControlsRef.current = undefined;
+          const changeLinkButton =
+            popupContent.querySelector<HTMLButtonElement>(
+              ".map-feature-popup-change-link"
+            );
+          const linkStatus = popupContent.querySelector<HTMLElement>(
+            ".map-feature-popup-link-status"
+          );
+          if (
+            changeLinkButton !== null &&
+            linkStatus !== null &&
+            reviewFeatureId !== undefined
+          ) {
+            const controls: LinkChangeControls = {
+              featureId: reviewFeatureId,
+              button: changeLinkButton,
+              status: linkStatus
+            };
+            linkChangeControlsRef.current = controls;
+            changeLinkButton.addEventListener("click", () => {
+              if (linkChangeFeatureIdRef.current === controls.featureId) {
+                cancelLinkChange();
+                return;
+              }
+              if (linkChangeFeatureIdRef.current !== undefined) {
+                cancelLinkChange();
+              }
+              const stop = mapData.current.stops.find(
+                (candidate) => candidate.featureId === controls.featureId
+              );
+              if (stop === undefined) {
+                linkStatus.textContent =
+                  "This GTFS stop is no longer available.";
+                return;
+              }
+              linkChangeControlsRef.current = controls;
+              linkChangeFeatureIdRef.current = controls.featureId;
+              setLinkChangeFeatureId(controls.featureId);
+              updateLinkChangeControls(
+                controls.featureId,
+                true,
+                `Click an OSM Data element to link it to ${stop.stopNameExpanded}. The preview snaps to nearby candidates. Press Escape to cancel.`
+              );
+              onFeatureClickRef.current?.(controls.featureId);
+              instance.getCanvas().style.cursor = "crosshair";
+              updateProposedConnectionSource(
+                instance,
+                stop,
+                getLinkPreviewCoordinate(
+                  instance,
+                  lastCursorPointRef.current,
+                  lastCursorCoordinateRef.current
+                )
+              );
+            });
+          }
+          popupContent.style.maxHeight = `${getPopupMaxHeight(
+            canvasHeight,
+            event.point.y,
+            popupAnchor
           )}px`;
           activePopup = new module.Popup({
             closeButton: true,
             closeOnClick: true,
-            maxWidth: "20rem",
-            anchor: event.point.y > canvasHeight / 2 ? "bottom" : "top"
+            maxWidth: "min(24rem, calc(100% - 1rem))",
+            ...(popupAnchor === undefined ? {} : { anchor: popupAnchor })
           })
             .setLngLat(event.lngLat)
             .setDOMContent(popupContent)
             .addTo(instance);
         };
         instance.on("click", interactiveLayerIds, handleFeatureClick);
+        instance.on("mousemove", (event) => {
+          const cursorPosition = [event.lngLat.lng, event.lngLat.lat] as const;
+          lastCursorPointRef.current = {
+            x: event.point.x,
+            y: event.point.y
+          };
+          lastCursorCoordinateRef.current = cursorPosition;
+          const pendingFeatureId = linkChangeFeatureIdRef.current;
+          if (pendingFeatureId !== undefined) {
+            const stop = mapData.current.stops.find(
+              (candidate) => candidate.featureId === pendingFeatureId
+            );
+            updateProposedConnectionSource(
+              instance,
+              stop,
+              getLinkPreviewCoordinate(
+                instance,
+                lastCursorPointRef.current,
+                cursorPosition
+              )
+            );
+          }
+        });
         instance.on("mouseenter", interactiveLayerIds, () => {
-          instance.getCanvas().style.cursor = "pointer";
+          instance.getCanvas().style.cursor =
+            linkChangeFeatureIdRef.current === undefined
+              ? "pointer"
+              : "crosshair";
         });
         instance.on("mouseleave", interactiveLayerIds, () => {
-          instance.getCanvas().style.cursor = "";
+          instance.getCanvas().style.cursor =
+            linkChangeFeatureIdRef.current === undefined ? "" : "crosshair";
         });
         const handleZoom = (): void => {
           setShowZoomNotice(shouldShowZoomNotice(instance.getZoom()));
@@ -1325,6 +1903,9 @@ export function MapView({
           true
         );
       }
+      if (handleLinkChangeKeyDown !== undefined) {
+        document.removeEventListener("keydown", handleLinkChangeKeyDown);
+      }
       map.current?.remove();
       map.current = null;
     };
@@ -1347,14 +1928,30 @@ export function MapView({
         mapData.current.candidateNodes,
         mapData.current.focusedCandidateNodeHighlights
       );
+      updateAllConnectionSource(
+        map.current,
+        mapData.current.allConnectionFeatures
+      );
       updateMatchConnectionSource(
         map.current,
         mapData.current.connectionFeatures
+      );
+      updateProposedConnectionSource(
+        map.current,
+        mapData.current.stops.find(
+          (stop) => stop.featureId === linkChangeFeatureIdRef.current
+        ),
+        getLinkPreviewCoordinate(
+          map.current,
+          lastCursorPointRef.current,
+          lastCursorCoordinateRef.current
+        )
       );
     }
   }, [
     exactMatchRadiusMeters,
     focusedFeatureId,
+    linkChangeFeatureId,
     matches,
     nodes,
     reviews,
