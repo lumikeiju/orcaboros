@@ -4,6 +4,9 @@ import { defineConfig } from "vitest/config";
 export default defineConfig(({ command }) => ({
   base: command === "build" ? "/orcaboros/" : "/",
   plugins: [react()],
+  build: {
+    chunkSizeWarningLimit: 1100
+  },
   optimizeDeps: {
     exclude: ["maplibre-gl"]
   },

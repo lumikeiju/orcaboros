@@ -1,7 +1,7 @@
 import { EligibleStop } from "../../domain/gtfs";
 import { InitialMatch } from "../../domain/matching";
 import { OsmElement } from "../../domain/osm";
-import type { MatchingMessage } from "../../workers/matching.worker";
+import type { MatchingWorkerMessage } from "../../workers/protocol";
 
 export function matchStopsInWorker(
   stops: readonly EligibleStop[],
@@ -16,7 +16,7 @@ export function matchStopsInWorker(
       { type: "module" }
     );
     const requestId = crypto.randomUUID();
-    worker.onmessage = (event: MessageEvent<MatchingMessage>) => {
+    worker.onmessage = (event: MessageEvent<MatchingWorkerMessage>) => {
       const message = event.data;
       if (message.requestId !== requestId) {
         return;

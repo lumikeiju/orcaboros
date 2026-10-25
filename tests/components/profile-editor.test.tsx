@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { EligibleStop } from "../../src/domain/gtfs";
+import type { MappingProfile } from "../../src/domain/profile";
 import { ProfileEditor } from "../../src/components/ProfileEditor";
 import { getProfileForFeedId, getProfileForFeedIds } from "../../src/profiles";
 
@@ -311,18 +312,33 @@ describe("ProfileEditor", () => {
         removeKeys: ["obsolete:tag"]
       }))
     };
-    const onChange = vi.fn();
-    render(
+    let updatedProfile: MappingProfile = profileWithRemoval;
+    const onChange = vi.fn((nextProfile: MappingProfile) => {
+      updatedProfile = nextProfile;
+    });
+    const onReset = vi.fn();
+    const { rerender } = render(
       <ProfileEditor
-        profile={profileWithRemoval}
+        profile={updatedProfile}
         onChange={onChange}
-        onReset={vi.fn()}
+        onReset={onReset}
       />
     );
 
-    fireEvent.change(screen.getByLabelText("OSM tag key to remove"), {
+    const removeKeyInput = screen.getByLabelText("OSM tag key to remove");
+    removeKeyInput.focus();
+    fireEvent.change(removeKeyInput, {
       target: { value: "old:tag" }
     });
+    rerender(
+      <ProfileEditor
+        profile={updatedProfile}
+        onChange={onChange}
+        onReset={onReset}
+      />
+    );
+    expect(screen.getByLabelText("OSM tag key to remove")).toBe(removeKeyInput);
+    expect(removeKeyInput).toHaveFocus();
     expect(onChange).toHaveBeenLastCalledWith(
       expect.objectContaining({
         sourceFeeds: [expect.objectContaining({ removeKeys: ["old:tag"] })]
@@ -331,7 +347,7 @@ describe("ProfileEditor", () => {
 
     fireEvent.click(
       screen.getByRole("button", {
-        name: 'Remove OSM key "obsolete:tag"'
+        name: 'Remove OSM key "old:tag"'
       })
     );
     expect(onChange).toHaveBeenLastCalledWith(

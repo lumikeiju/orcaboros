@@ -56,9 +56,9 @@ export function IntroWarning({
   }
 
   return (
-    <div className="intro-warning-backdrop">
+    <div className="intro-warning-backdrop glass-scrollbar">
       <section
-        className="intro-warning-dialog"
+        className="intro-warning-dialog glass-scrollbar"
         role="alertdialog"
         aria-modal="true"
         aria-labelledby="intro-warning-heading"

@@ -1,5 +1,7 @@
-import type { FeedImportResult } from "../domain/gtfs";
-import { SourceFeedDefinition } from "../domain/source-feed";
+import type { EligibleStop, FeedImportResult } from "../domain/gtfs";
+import type { InitialMatch } from "../domain/matching";
+import type { OsmElement } from "../domain/osm";
+import type { SourceFeedDefinition } from "../domain/source-feed";
 
 export type WorkerErrorPayload = {
   code: string;
@@ -50,6 +52,28 @@ export type GtfsWorkerMessage =
 export type MatchingWorkerRequest = {
   type: "match";
   requestId: string;
+  stops: readonly EligibleStop[];
+  nodes: readonly OsmElement[];
+  candidateRadiusMeters: number;
+  autoIdRadiusMeters: number;
 };
+
+export type MatchingWorkerMessage =
+  | {
+      type: "match-progress";
+      requestId: string;
+      processed: number;
+      total: number;
+    }
+  | {
+      type: "match-complete";
+      requestId: string;
+      results: ReadonlyMap<string, InitialMatch>;
+    }
+  | {
+      type: "match-error";
+      requestId: string;
+      message: string;
+    };
 
 export type WorkerRequest = GtfsWorkerRequest | MatchingWorkerRequest;

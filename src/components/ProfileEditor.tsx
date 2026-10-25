@@ -394,8 +394,8 @@ export function ProfileEditor({
   }
 
   return (
-    <details className="panel" open>
-      <summary>Mapping profile</summary>
+    <>
+      <h2>Mapping profile</h2>
       <div className="profile-grid">
         <label>
           Candidate radius (m)
@@ -443,7 +443,7 @@ export function ProfileEditor({
                 <span>Geometry target</span>
                 <button
                   type="button"
-                  className={`profile-geometry-toggle${
+                  className={`glass-toggle profile-geometry-toggle${
                     geometryTarget === "gtfs" ? " is-gtfs" : ""
                   }`}
                   role="switch"
@@ -463,10 +463,10 @@ export function ProfileEditor({
                     GTFS
                   </span>
                   <span
-                    className="profile-geometry-toggle-track"
+                    className="profile-geometry-toggle-track glass-toggle-track"
                     aria-hidden="true"
                   >
-                    <span className="profile-geometry-toggle-thumb" />
+                    <span className="profile-geometry-toggle-thumb glass-toggle-thumb" />
                   </span>
                   <span
                     className="profile-geometry-toggle-option"
@@ -484,7 +484,7 @@ export function ProfileEditor({
                 <span>Street name cleanup</span>
                 <button
                   type="button"
-                  className={`profile-cleanup-toggle${
+                  className={`glass-toggle profile-cleanup-toggle${
                     sourceFeed.streetNameCleanup ? " is-on" : ""
                   }`}
                   role="switch"
@@ -504,10 +504,10 @@ export function ProfileEditor({
                     Off
                   </span>
                   <span
-                    className="profile-cleanup-toggle-track"
+                    className="profile-cleanup-toggle-track glass-toggle-track"
                     aria-hidden="true"
                   >
-                    <span className="profile-cleanup-toggle-thumb" />
+                    <span className="profile-cleanup-toggle-thumb glass-toggle-thumb" />
                   </span>
                   <span
                     className="profile-cleanup-toggle-option"
@@ -768,7 +768,7 @@ export function ProfileEditor({
                             : `at row ${index + 1}`
                         }`;
                         return (
-                          <tr key={`${key}-${index}`}>
+                          <tr key={index}>
                             <td>
                               <input
                                 type="text"
@@ -851,6 +851,6 @@ export function ProfileEditor({
           {jsonError}
         </p>
       )}
-    </details>
+    </>
   );
 }

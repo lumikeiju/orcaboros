@@ -1,24 +1,19 @@
 # Orcaboros architecture
 
-Orcaboros is a static React/Vite application. The browser is the only runtime; there is no application server, proxy, database service, authentication layer, telemetry, or direct OpenStreetMap upload.
+Orcaboros is a static React/Vite application; the browser is its only application runtime. It reads uploaded GTFS ZIPs, retrieves OSM candidates only when the user starts retrieval, and downloads a JOSM-compatible `.osm` file for manual review. There is no application server, proxy, backend database, authentication, telemetry, remote GTFS fetch, or direct OSM upload.
 
-## Boundaries
+## Code boundaries
 
-- `src/domain/` contains framework-independent types and pure rules. It owns feed identity, stop eligibility, profile validation, spatial evidence, review state, session compatibility, and export contracts.
-- `src/infrastructure/gtfs/` streams local ZIP bytes into the `stops.txt` CSV parser. The importer never opens timetable files and never persists raw ZIP bytes.
-- `src/infrastructure/osm/` constructs bounded Overpass POST requests, parses OSM nodes and tagged platform ways into point candidates, performs local matching, and serializes OSM Change XML. Platform ways retain their member references so tag changes can be exported without changing their geometry. The endpoint is passed only to the request function and is never part of a persisted type.
-- `src/storage/` owns IndexedDB records. Records are keyed by immutable session IDs and contain no operational endpoint URLs.
-- `src/workers/` contains long-running import and matching message contracts. Worker errors are typed and sanitized before they reach the UI.
-- `src/components/` and `src/features/` contain React presentation and interaction. They consume domain contracts rather than importing domain code from browser-specific modules.
-
-At detail zoom, status, processed, and OSM candidate map icons are clickable. Popups show profile-mapped tags for GTFS stops and current tags for OSM elements; clicking a candidate also focuses its associated review item when one exists.
+- `src/domain/` defines framework-independent feed, profile, stop, matching, review, session, and change contracts and rules.
+- `src/infrastructure/gtfs/` streams only `stops.txt` from local ZIPs through the CSV importer. It fingerprints archives but never persists raw ZIP bytes.
+- `src/infrastructure/osm/` builds bounded Overpass POST queries, parses OSM nodes and tagged platform ways, matches candidates locally, and validates and serializes JOSM XML.
+- `src/workers/` runs GTFS import and matching off the UI thread; `src/features/` provides their UI clients. `src/App.tsx` and `src/components/` own workflow and presentation.
+- `src/storage/` persists profiles, imported stops, OSM snapshots, reviews, and export drafts in IndexedDB under immutable session IDs.
 
 ## Session lifecycle
 
-An import is staged under a new session ID. Only after every selected archive has a valid source identity, required `stops.txt` columns, unique stop IDs, and validated derived records does the active-session pointer change. A failed or cancelled staging operation removes its records and leaves the previous active session untouched.
+Imports are staged under a new ID and activated only after all selected archives process successfully. Failure or cancellation discards staging and preserves the previous active session. The source-set and profile fingerprints, plus the OSM snapshot ID, define compatibility. Changing the source set or profile invalidates the snapshot, reviews, and draft; refreshing the snapshot invalidates reviews and the draft.
 
-Feed fingerprints, the sorted source-set fingerprint, profile fingerprints, and OSM snapshot IDs are compatibility keys. A changed source set or profile cannot reuse an old snapshot, review decision, or draft. An OSM snapshot refresh invalidates review state and drafts.
+## Network and privacy
 
-## OSM privacy boundary
-
-The mapper supplies an HTTPS Overpass-compatible endpoint in an obscured, session-only control. Requests use `cache: "no-store"` and bounded streaming response parsing. Error messages expose only a category and safe HTTP status; they never include the endpoint, request body, or response text. Synthetic fixtures are used in tests, and no repository test executes a live Overpass request.
+The user supplies an HTTPS Overpass-compatible endpoint and starts retrieval explicitly. Requests are POSTed without caching, bounded by the stop extent and response limits, and errors are sanitized. Tests use synthetic fixtures, never live Overpass requests. Overpass endpoints and custom MapLibre style URLs are session-only and are never persisted or logged.

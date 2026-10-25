@@ -127,7 +127,7 @@ type WorkflowStepStatus = {
 const MIN_RAIL_WIDTH = 18;
 const MAX_RAIL_WIDTH = 36;
 const MIN_REVIEW_HEIGHT = 20;
-const MAX_REVIEW_HEIGHT = 55;
+const MAX_REVIEW_HEIGHT = 77;
 
 function formatBytes(bytes: number): string {
   const units = ["B", "KiB", "MiB", "GiB"] as const;
@@ -196,7 +196,7 @@ export function App(): ReactElement {
   const [focusedFeatureId, setFocusedFeatureId] = useState<string>();
   const [openWorkflowStep, setOpenWorkflowStep] = useState<
     WorkflowStepId | undefined
-  >("upload");
+  >();
   const [railWidth, setRailWidth] = useState(25);
   const [reviewHeight, setReviewHeight] = useState(33);
   const [endpoint, setEndpoint] = useState("");
@@ -519,9 +519,10 @@ export function App(): ReactElement {
         stops,
         profile.candidateRadiusMeters
       );
-      const identityKeys = identityKeysForSourceFeeds([
+      const sourceFeedIds = [
         ...new Set(stops.map((stop) => stop.sourceFeedId))
-      ]);
+      ];
+      const identityKeys = identityKeysForSourceFeeds(sourceFeedIds);
       const requests = buildOverpassRequests(bounds, identityKeys);
       setOsmProgress({ phase: "query", processed: 0, total: requests.length });
       const nodesById = new Map<string, OsmElement>();
@@ -608,13 +609,7 @@ export function App(): ReactElement {
           const staleKeys =
             node === undefined
               ? []
-              : staleIdentityKeys(
-                  node,
-                  [
-                    ...new Set(stops.map((candidate) => candidate.sourceFeedId))
-                  ],
-                  validStopIds
-                );
+              : staleIdentityKeys(node, sourceFeedIds, validStopIds);
           const removeKeys =
             node === undefined
               ? []
@@ -1355,16 +1350,31 @@ export function App(): ReactElement {
                   stored. Requests retrieve OSM nodes and tagged platform ways,
                   bounded by the candidate radius.
                 </p>
-                <label>
-                  HTTPS Overpass-compatible endpoint
+                <div className="endpoint-field">
+                  <div className="endpoint-field-header">
+                    <label htmlFor="overpass-endpoint">
+                      HTTPS Overpass-compatible endpoint
+                    </label>
+                    <a
+                      aria-label="Find public Overpass API instances"
+                      className="endpoint-info-link"
+                      href="https://wiki.openstreetmap.org/wiki/Overpass_API#Public_Overpass_API_instances"
+                      rel="noreferrer"
+                      target="_blank"
+                      title="Public Overpass API instances"
+                    >
+                      <span aria-hidden="true">i</span>
+                    </a>
+                  </div>
                   <input
+                    id="overpass-endpoint"
                     type="password"
                     autoComplete="off"
                     value={endpoint}
                     onChange={(event) => setEndpoint(event.target.value)}
                     placeholder="https://your-overpass.example/api/interpreter"
                   />
-                </label>
+                </div>
                 <label className="style-url-label">
                   Optional session-only MapLibre style URL
                   <input
@@ -1375,13 +1385,6 @@ export function App(): ReactElement {
                     placeholder="Leave blank for Fiord dark / Positron light"
                   />
                 </label>
-                <button
-                  type="button"
-                  onClick={() => void retrieveCandidates()}
-                  disabled={loading}
-                >
-                  Retrieve Candidates
-                </button>
                 {osmProgress !== undefined && (
                   <ProgressIndicator
                     label={
@@ -1401,23 +1404,34 @@ export function App(): ReactElement {
                 {osmRequestResult !== undefined && (
                   <OsmRequestResult result={osmRequestResult} />
                 )}
-                {retrievalComplete && (
-                  <button
-                    type="button"
-                    className="workflow-next-step"
-                    onClick={openReviewQueue}
-                  >
-                    Continue to review
-                  </button>
-                )}
-                <button
-                  type="button"
-                  className="secondary"
-                  onClick={() => osmAbortController.current?.abort()}
-                  disabled={!osmRequestActive}
-                >
-                  Cancel OSM Request
-                </button>
+                <div className="retrieve-actions">
+                  <div className="retrieve-request-actions">
+                    <button
+                      type="button"
+                      onClick={() => void retrieveCandidates()}
+                      disabled={loading}
+                    >
+                      Retrieve Candidates
+                    </button>
+                    <button
+                      type="button"
+                      className="secondary"
+                      onClick={() => osmAbortController.current?.abort()}
+                      disabled={!osmRequestActive}
+                    >
+                      Cancel OSM Request
+                    </button>
+                  </div>
+                  {retrievalComplete && (
+                    <button
+                      type="button"
+                      className="workflow-next-step"
+                      onClick={openReviewQueue}
+                    >
+                      Continue to review
+                    </button>
+                  )}
+                </div>
               </>
             )}
           </section>
@@ -1544,7 +1558,10 @@ export function App(): ReactElement {
       </header>
       <div className="app-body">
         <aside className="workflow-sidebar" aria-label="Review workflow">
-          <nav className="workflow-nav" aria-label="Workflow steps">
+          <nav
+            className="workflow-nav glass-scrollbar"
+            aria-label="Workflow steps"
+          >
             {workflowSteps.map((step) => {
               const isOpen = openWorkflowStep === step.id;
               const panelId = `${step.id}-step-panel`;
@@ -1600,8 +1617,10 @@ export function App(): ReactElement {
               resolved={conflationProgress.resolved}
               total={conflationProgress.total}
             />
-            <strong>Review progress</strong>
-            <small>{nodes.length > 0 ? "Review in progress" : status}</small>
+            <div className="progress-rail-copy">
+              <strong>Review progress</strong>
+              <small>{nodes.length > 0 ? "Review in progress" : status}</small>
+            </div>
           </div>
         </aside>
         <ResizeHandle
@@ -1653,7 +1672,7 @@ export function App(): ReactElement {
           {retrievalComplete ? (
             <section
               id="review-step"
-              className="review-workspace"
+              className="review-workspace glass-background glass-background--level-1"
               aria-labelledby="review-heading"
             >
               <ReviewQueue

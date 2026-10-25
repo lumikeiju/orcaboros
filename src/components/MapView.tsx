@@ -30,6 +30,16 @@ const MAP_STYLE_NAMES = {
   light: "Positron"
 } as const;
 
+const ATTRIBUTION_EXPANDED_CLASS = "maplibregl-compact-show";
+
+function setAttributionExpanded(
+  attribution: HTMLDetailsElement,
+  expanded: boolean
+): void {
+  attribution.open = expanded;
+  attribution.classList.toggle(ATTRIBUTION_EXPANDED_CLASS, expanded);
+}
+
 const GLOBE_PROJECTION: Parameters<MapLibreMap["setProjection"]>[0] = {
   type: [
     "interpolate",
@@ -199,12 +209,17 @@ function createMarkerImage(color: string, shape: MarkerShape): ImageData {
     context.fillStyle = color;
     context.fill();
   }
+  context.lineWidth = 5;
+  context.strokeStyle = "#ffffff";
+  context.stroke();
   context.lineWidth = 3;
   context.strokeStyle = "#111827";
   context.stroke();
-  context.lineWidth = 1;
-  context.strokeStyle = "#ffffff";
-  context.stroke();
+  if (shape === "ring") {
+    context.lineWidth = 1;
+    context.strokeStyle = color;
+    context.stroke();
+  }
   return context.getImageData(0, 0, size, size);
 }
 
@@ -301,6 +316,8 @@ function addFocusHaloLayer(
   color: string,
   labelLayerId: string | undefined
 ): void {
+  const radii: readonly [number, number, number] =
+    highlightRole === "primary" ? [10, 15, 20] : [8, 11, 15];
   instance.addLayer(
     {
       id,
@@ -310,18 +327,20 @@ function addFocusHaloLayer(
       filter: ["==", ["get", "highlight"], highlightRole],
       paint: {
         "circle-color": color,
-        "circle-opacity": 0.55,
-        "circle-blur": 0.75,
+        "circle-opacity": 0.18,
+        "circle-stroke-color": color,
+        "circle-stroke-opacity": 1,
+        "circle-stroke-width": 2,
         "circle-radius": [
           "interpolate",
           ["linear"],
           ["zoom"],
           DETAIL_ZOOM,
-          10,
+          radii[0],
           14,
-          15,
+          radii[1],
           18,
-          20
+          radii[2]
         ]
       }
     },
@@ -427,7 +446,7 @@ export function createMapPopupContent(
   description?: string
 ): HTMLElement {
   const content = document.createElement("div");
-  content.className = "map-feature-popup";
+  content.className = "map-feature-popup glass-scrollbar";
   content.setAttribute("role", "group");
   content.setAttribute("aria-label", `${title} tags`);
 
@@ -799,12 +818,16 @@ export function MapLegend(): ReactElement {
   const [isOpen, setIsOpen] = useState(true);
 
   return (
-    <aside className="map-legend" aria-labelledby="map-legend-heading">
+    <aside
+      className="map-legend glass-pane glass-pane--level-2"
+      aria-labelledby="map-legend-heading"
+      onWheel={(event) => event.stopPropagation()}
+    >
       <div className={`map-legend-header${isOpen ? " is-open" : ""}`}>
         <h3 id="map-legend-heading">Map legend</h3>
         <button
           type="button"
-          className="map-legend-toggle"
+          className="map-legend-toggle glass-button glass-button--quiet"
           aria-controls="map-legend-items"
           aria-expanded={isOpen}
           aria-label={`${isOpen ? "Collapse" : "Expand"} map legend`}
@@ -813,7 +836,12 @@ export function MapLegend(): ReactElement {
           <span className="map-legend-toggle-icon" aria-hidden="true" />
         </button>
       </div>
-      <ul id="map-legend-items" hidden={!isOpen}>
+      <ul
+        id="map-legend-items"
+        className="glass-scrollbar"
+        hidden={!isOpen}
+        tabIndex={isOpen ? 0 : undefined}
+      >
         <li>
           <span className="map-legend-marker is-matched" aria-hidden="true" />
           Match found
@@ -824,7 +852,7 @@ export function MapLegend(): ReactElement {
         </li>
         <li>
           <span className="map-legend-marker is-new" aria-hidden="true" />
-          No candidate
+          Unmatched stop
         </li>
         <li>
           <span className="map-legend-marker is-removed" aria-hidden="true" />
@@ -836,7 +864,7 @@ export function MapLegend(): ReactElement {
         </li>
         <li>
           <span className="map-legend-marker is-candidate" aria-hidden="true" />
-          Candidate
+          OSM candidate
         </li>
         <li>
           <span
@@ -858,7 +886,7 @@ export function MapLegend(): ReactElement {
         </li>
         <li>
           <span className="map-legend-processed" aria-hidden="true" />
-          Processed
+          Reviewed
         </li>
       </ul>
     </aside>
@@ -882,6 +910,7 @@ export function MapView({
   const container = useRef<HTMLDivElement>(null);
   const map = useRef<MapLibreMap | null>(null);
   const mapLoaded = useRef(false);
+  const attributionExpanded = useRef(true);
   const [showZoomNotice, setShowZoomNotice] = useState(false);
   const derivedMapData = buildMapMarkers(
     stops,
@@ -934,24 +963,54 @@ export function MapView({
   useEffect(() => {
     let disposed = false;
     let activePopup: MapLibrePopup | undefined;
+    let attributionControl: HTMLDetailsElement | null = null;
+    let attributionToggle: HTMLElement | null = null;
+    let handleAttributionToggle: (() => void) | undefined;
     setShowZoomNotice(false);
     mapLoaded.current = false;
     void import("maplibre-gl").then((module) => {
-      if (disposed || container.current === null) {
+      const mapContainer = container.current;
+      if (disposed || mapContainer === null) {
         return;
       }
       module.setWorkerUrl(maplibreWorkerUrl);
       const instance = new module.Map({
-        container: container.current,
+        container: mapContainer,
         style: resolvedStyleUrl,
         center: DEFAULT_MAP_CENTER,
         zoom: DEFAULT_MAP_ZOOM,
         bearing: 0,
         pitch: 0,
         dragRotate: false,
-        pitchWithRotate: false
+        pitchWithRotate: false,
+        attributionControl: { compact: true }
       });
       map.current = instance;
+      attributionControl = mapContainer.querySelector<HTMLDetailsElement>(
+        ".maplibregl-ctrl-attrib"
+      );
+      if (attributionControl !== null) {
+        setAttributionExpanded(attributionControl, attributionExpanded.current);
+        attributionToggle = attributionControl.querySelector<HTMLElement>(
+          ".maplibregl-ctrl-attrib-button"
+        );
+        handleAttributionToggle = (): void => {
+          attributionExpanded.current = !attributionControl?.classList.contains(
+            ATTRIBUTION_EXPANDED_CLASS
+          );
+        };
+        attributionToggle?.addEventListener(
+          "click",
+          handleAttributionToggle,
+          true
+        );
+        const keepAttributionExpanded = (): void => {
+          if (attributionExpanded.current && attributionControl !== null) {
+            setAttributionExpanded(attributionControl, true);
+          }
+        };
+        instance.on("drag", keepAttributionExpanded);
+      }
       instance.once("style.load", () => {
         if (disposed) {
           return;
@@ -1067,13 +1126,28 @@ export function MapView({
         );
         instance.addLayer(
           {
+            id: "map-processed-casing",
+            type: "circle",
+            source: "map-processed",
+            minzoom: DETAIL_ZOOM,
+            paint: {
+              "circle-color": "rgba(0, 0, 0, 0)",
+              "circle-radius": 10,
+              "circle-stroke-color": "#111827",
+              "circle-stroke-width": 4
+            }
+          },
+          labelLayerId
+        );
+        instance.addLayer(
+          {
             id: "map-processed",
             type: "circle",
             source: "map-processed",
             minzoom: DETAIL_ZOOM,
             paint: {
               "circle-color": "rgba(0, 0, 0, 0)",
-              "circle-radius": 9,
+              "circle-radius": 8,
               "circle-stroke-color": "#F0E442",
               "circle-stroke-width": 2
             }
@@ -1099,10 +1173,10 @@ export function MapView({
                   "interpolate",
                   ["linear"],
                   ["zoom"],
-                  8,
-                  0.5,
+                  DETAIL_ZOOM,
+                  0.7,
                   14,
-                  0.8
+                  0.85
                 ]
               },
               paint: {
@@ -1110,7 +1184,7 @@ export function MapView({
                   "case",
                   ["boolean", ["get", "processed"], false],
                   1,
-                  0.62
+                  0.85
                 ]
               }
             },
@@ -1244,6 +1318,13 @@ export function MapView({
       disposed = true;
       mapLoaded.current = false;
       activePopup?.remove();
+      if (attributionToggle !== null && handleAttributionToggle !== undefined) {
+        attributionToggle.removeEventListener(
+          "click",
+          handleAttributionToggle,
+          true
+        );
+      }
       map.current?.remove();
       map.current = null;
     };
@@ -1322,7 +1403,7 @@ export function MapView({
       {showZoomNotice && (
         <button
           type="button"
-          className="map-zoom-notice"
+          className="map-zoom-notice glass-button glass-button--secondary"
           aria-label="Zoom map in to view data"
           onClick={() =>
             map.current?.zoomTo(DETAIL_ZOOM, {

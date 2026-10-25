@@ -146,9 +146,9 @@ export function SourcePicker({
   }
 
   return (
-    <section className="panel" aria-labelledby="source-heading">
-      <h2 id="source-heading">Upload GTFS ZIPs</h2>
-      <p>Only stops.txt is read; each feed ID defaults to the ZIP filename.</p>
+    <>
+      <h2>Upload GTFS ZIPs</h2>
+      <p>Feed ID defaults to the ZIP filename.</p>
       <label
         className={`file-control file-drop-zone${
           isDragActive ? " is-dragging" : ""
@@ -244,6 +244,6 @@ export function SourcePicker({
           .
         </p>
       )}
-    </section>
+    </>
   );
 }

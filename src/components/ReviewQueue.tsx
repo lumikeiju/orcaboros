@@ -15,6 +15,32 @@ import {
 } from "../domain/source-feed";
 
 const REVIEW_PAGE_SIZE = 10;
+const EMPTY_OSM_ELEMENTS: readonly OsmElement[] = [];
+const EMPTY_VALID_STOP_IDS: ReadonlyMap<
+  string,
+  ReadonlySet<string>
+> = new Map();
+
+function MapLocateIcon(): ReactElement {
+  return (
+    <svg
+      aria-hidden="true"
+      className="review-card-focus-icon"
+      focusable="false"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="1.8"
+    >
+      <path d="m3.5 6.5 5.25-2.5 6.5 2.5 5.25-2.5v13l-5.25 2.5-6.5-2.5-5.25 2.5v-13Z" />
+      <path d="M8.75 4v13M15.25 6.5v13" />
+      <circle cx="12" cy="11.5" r="2.1" />
+      <circle cx="12" cy="11.5" r="0.45" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
 
 type ReviewCategory = "new" | "removed" | "moved" | "exact";
 
@@ -93,7 +119,7 @@ function ReviewDiffRow({
       <td
         className={`review-diff-cell review-diff-cell-add${
           addHighlighted ? " is-highlighted" : ""
-        }`}
+        } glass-pane glass-pane--level-3 glass-pane--compact`}
       >
         <div className="review-diff-cell-content">
           <span className="review-diff-field">{gtfsLabel}</span>
@@ -103,7 +129,7 @@ function ReviewDiffRow({
       <td
         className={`review-diff-cell review-diff-cell-remove${
           removeHighlighted ? " is-highlighted" : ""
-        }`}
+        } glass-pane glass-pane--level-3 glass-pane--compact`}
       >
         <div className="review-diff-cell-content">
           <span className="review-diff-field">{osmLabel}</span>
@@ -131,8 +157,8 @@ export function ReviewQueue({
   stops,
   matches,
   reviews,
-  nodes = [],
-  validStopIds = new Map(),
+  nodes = EMPTY_OSM_ELEMENTS,
+  validStopIds = EMPTY_VALID_STOP_IDS,
   geometryTargets,
   exactMatchRadiusMeters = Number.POSITIVE_INFINITY,
   onAction,
@@ -147,6 +173,7 @@ export function ReviewQueue({
   });
   const [page, setPage] = useState(1);
   const focusedCardRef = useRef<HTMLButtonElement>(null);
+  const filtersDisclosureRef = useRef<HTMLDetailsElement>(null);
 
   const items = useMemo<readonly ReviewQueueItem[]>(() => {
     const stopItems = stops.map((stop): StopReviewItem => {
@@ -202,6 +229,7 @@ export function ReviewQueue({
     return counts;
   }, [items]);
   const visibleItems = items.filter((item) => filters[item.category]);
+  const hasVisibleItems = visibleItems.length > 0;
   const focusedVisibleIndex = visibleItems.findIndex(
     (item) => reviewQueueItemFeatureId(item) === focusedFeatureId
   );
@@ -218,6 +246,30 @@ export function ReviewQueue({
     pageItems.find(
       (item) => reviewQueueItemFeatureId(item) === focusedFeatureId
     ) ?? pageItems[0];
+  const reviewSummary = (
+    <p
+      className={`review-summary${hasVisibleItems ? "" : " is-empty"}`}
+      role="status"
+    >
+      {hasVisibleItems ? (
+        `Showing ${(currentPage - 1) * REVIEW_PAGE_SIZE + 1}-${Math.min(
+          currentPage * REVIEW_PAGE_SIZE,
+          visibleItems.length
+        )} of ${visibleItems.length} results`
+      ) : (
+        <>
+          <span>0 results</span>
+          <button
+            type="button"
+            className="review-summary-check-filters"
+            onClick={openFilters}
+          >
+            Check filters?
+          </button>
+        </>
+      )}
+    </p>
+  );
 
   useEffect(() => {
     if (focusedFeatureId === undefined) {
@@ -226,13 +278,14 @@ export function ReviewQueue({
     const focusedItem = items.find(
       (item) => reviewQueueItemFeatureId(item) === focusedFeatureId
     );
-    if (focusedItem !== undefined && !filters[focusedItem.category]) {
-      setFilters((current) => ({
-        ...current,
-        [focusedItem.category]: true
-      }));
+    if (focusedItem !== undefined) {
+      setFilters((current) =>
+        current[focusedItem.category]
+          ? current
+          : { ...current, [focusedItem.category]: true }
+      );
     }
-  }, [filters, focusedFeatureId, items]);
+  }, [focusedFeatureId, items]);
 
   useEffect(() => {
     const nextPage =
@@ -255,6 +308,12 @@ export function ReviewQueue({
     }));
   }
 
+  function openFilters(): void {
+    if (filtersDisclosureRef.current !== null) {
+      filtersDisclosureRef.current.open = true;
+    }
+  }
+
   function handleDecisionAction(featureId: string, action: ReviewAction): void {
     onAction(featureId, action);
     const currentIndex = visibleItems.findIndex(
@@ -268,10 +327,11 @@ export function ReviewQueue({
 
   function renderStopCard(item: StopReviewItem): ReactElement {
     const { stop, result, review } = item;
+    const stopCode = stop.rawFields.stop_code?.trim() || "—";
     return (
       <li
         key={stop.featureId}
-        className={`review-card${
+        className={`review-card glass-pane glass-pane--level-2${
           focusedFeatureId === stop.featureId ? " is-focused" : ""
         }`}
       >
@@ -279,9 +339,11 @@ export function ReviewQueue({
           <div>
             <h3>{stop.stopNameExpanded}</h3>
             <p>
-              {stop.sourceFeedId} / {stop.stopId} / {stop.locationKind}
+              {stop.sourceFeedId} • {stopCode} • {stop.locationKind}
             </p>
           </div>
+        </div>
+        <div className="review-card-status-row">
           <div className="review-card-states">
             <span className={`category category-${item.category}`}>
               {item.category}
@@ -289,21 +351,22 @@ export function ReviewQueue({
             <span className={`state state-${review?.state ?? "unreviewed"}`}>
               {review?.state ?? "unreviewed"}
             </span>
-            <button
-              ref={
-                focusedFeatureId === stop.featureId ? focusedCardRef : undefined
-              }
-              type="button"
-              className={`review-card-focus secondary${
-                focusedFeatureId === stop.featureId ? " is-focused" : ""
-              }`}
-              aria-label={`Focus ${stop.stopNameExpanded} on the map`}
-              aria-pressed={focusedFeatureId === stop.featureId}
-              onClick={() => onFocusFeature(stop.featureId)}
-            >
-              Locate on map
-            </button>
           </div>
+          <button
+            ref={
+              focusedFeatureId === stop.featureId ? focusedCardRef : undefined
+            }
+            type="button"
+            className={`review-card-focus secondary${
+              focusedFeatureId === stop.featureId ? " is-focused" : ""
+            }`}
+            aria-label={`Focus ${stop.stopNameExpanded} on the map`}
+            title="Locate on map"
+            aria-pressed={focusedFeatureId === stop.featureId}
+            onClick={() => onFocusFeature(stop.featureId)}
+          >
+            <MapLocateIcon />
+          </button>
         </div>
         {result?.kind === "auto-matched" && (
           <fieldset>
@@ -424,7 +487,7 @@ export function ReviewQueue({
     return (
       <li
         key={featureId}
-        className={`review-card review-card-removed${
+        className={`review-card review-card-removed glass-pane glass-pane--level-2${
           focusedFeatureId === featureId ? " is-focused" : ""
         }`}
       >
@@ -437,21 +500,24 @@ export function ReviewQueue({
               {item.node.latitude.toFixed(5)}, {item.node.longitude.toFixed(5)}
             </p>
           </div>
+        </div>
+        <div className="review-card-status-row">
           <div className="review-card-states">
             <span className="category category-removed">removed</span>
-            <button
-              ref={focusedFeatureId === featureId ? focusedCardRef : undefined}
-              type="button"
-              className={`review-card-focus secondary${
-                focusedFeatureId === featureId ? " is-focused" : ""
-              }`}
-              aria-label={`Focus OSM ${elementLabel} ${item.node.id} on the map`}
-              aria-pressed={focusedFeatureId === featureId}
-              onClick={() => onFocusFeature(featureId)}
-            >
-              Locate on map
-            </button>
           </div>
+          <button
+            ref={focusedFeatureId === featureId ? focusedCardRef : undefined}
+            type="button"
+            className={`review-card-focus secondary${
+              focusedFeatureId === featureId ? " is-focused" : ""
+            }`}
+            aria-label={`Focus OSM ${elementLabel} ${item.node.id} on the map`}
+            title="Locate on map"
+            aria-pressed={focusedFeatureId === featureId}
+            onClick={() => onFocusFeature(featureId)}
+          >
+            <MapLocateIcon />
+          </button>
         </div>
         <p>This OSM identity is not present in the imported GTFS data.</p>
         <ul>
@@ -468,10 +534,9 @@ export function ReviewQueue({
   function renderDetail(item: ReviewQueueItem): ReactElement {
     if (item.kind === "removed") {
       return (
-        <article className="review-detail">
+        <article className="review-detail glass-pane glass-pane--level-2 glass-scrollbar">
           <div className="review-detail-heading">
             <div>
-              <p className="eyebrow">Stop comparison</p>
               <h3>
                 {elementDisplayLabel(item.node)} {item.node.id}
               </h3>
@@ -591,10 +656,9 @@ export function ReviewQueue({
       return osmValue === undefined ? "add" : "both";
     };
     return (
-      <article className="review-detail">
+      <article className="review-detail glass-pane glass-pane--level-2 glass-scrollbar">
         <div className="review-detail-heading">
           <div>
-            <p className="eyebrow">Stop comparison</p>
             <h3>{stop.stopNameExpanded}</h3>
           </div>
           <span className={`state state-${review?.state ?? "unreviewed"}`}>
@@ -679,7 +743,7 @@ export function ReviewQueue({
         {candidate !== undefined && (
           <button
             type="button"
-            className="decision-accept"
+            className="glass-button glass-button--success decision-accept"
             onClick={() =>
               handleDecisionAction(
                 item.stop.featureId,
@@ -692,7 +756,7 @@ export function ReviewQueue({
         )}
         <button
           type="button"
-          className="decision-reject"
+          className="glass-button glass-button--danger decision-reject"
           onClick={() =>
             handleDecisionAction(item.stop.featureId, { type: "skip" })
           }
@@ -701,7 +765,7 @@ export function ReviewQueue({
         </button>
         <button
           type="button"
-          className="decision-modify"
+          className="glass-button glass-button--accent decision-modify"
           onClick={() =>
             handleDecisionAction(item.stop.featureId, {
               type: "select-create",
@@ -718,48 +782,51 @@ export function ReviewQueue({
 
   return (
     <div className="review-columns">
-      <section
-        className="panel review-queue-panel"
-        aria-labelledby="review-heading"
-      >
+      <section className="review-queue-panel" aria-labelledby="review-heading">
         <h2 id="review-heading">Review Queue ({items.length})</h2>
         <p>
           Every feature must be explicitly matched, created, or skipped before
           an export can be enabled. Name and distance evidence never
           auto-selects.
         </p>
-        <fieldset className="review-filters">
-          <legend>Show results</legend>
-          {(["new", "removed", "moved", "exact"] as const).map((category) => (
-            <button
-              type="button"
-              className={`review-filter-toggle${
-                filters[category] ? " is-on" : ""
-              }`}
-              role="switch"
-              aria-checked={filters[category]}
-              aria-label={`Show ${category} results`}
-              key={category}
-              onClick={() => toggleFilter(category)}
-            >
-              <span className="review-toggle-track" aria-hidden="true">
-                <span className="review-toggle-thumb" />
-              </span>
-              <span>
-                {category} ({categoryCounts[category]})
-              </span>
-            </button>
-          ))}
-        </fieldset>
-        <p className="review-summary" role="status">
-          {visibleItems.length === 0
-            ? "No results match the selected filters."
-            : `Showing ${(currentPage - 1) * REVIEW_PAGE_SIZE + 1}-${Math.min(
-                currentPage * REVIEW_PAGE_SIZE,
-                visibleItems.length
-              )} of ${visibleItems.length} results`}
-        </p>
-        <ol className="review-list">
+        {!hasVisibleItems && reviewSummary}
+        <details className="review-filters" ref={filtersDisclosureRef}>
+          <summary className="glass-button glass-button--secondary">
+            Filters
+          </summary>
+          <div
+            className="review-filter-menu glass-pane glass-pane--level-2"
+            role="group"
+            aria-label="Show results"
+          >
+            {(["new", "removed", "moved", "exact"] as const).map((category) => (
+              <button
+                type="button"
+                className={`glass-toggle review-filter-toggle${
+                  filters[category] ? " is-on" : ""
+                }`}
+                role="switch"
+                aria-checked={filters[category]}
+                aria-label={`Show ${category} results`}
+                key={category}
+                onClick={() => toggleFilter(category)}
+              >
+                <span
+                  className="review-toggle-track glass-toggle-track"
+                  aria-hidden="true"
+                >
+                  <span className="review-toggle-thumb glass-toggle-thumb" />
+                </span>
+                <span className="review-filter-label">{category}</span>
+                <span className="review-filter-count">
+                  {categoryCounts[category]}
+                </span>
+              </button>
+            ))}
+          </div>
+        </details>
+        {hasVisibleItems && reviewSummary}
+        <ol className="review-list glass-scrollbar">
           {pageItems.map((item) =>
             item.kind === "removed"
               ? renderRemovedCard(item)
@@ -770,7 +837,7 @@ export function ReviewQueue({
           <nav className="review-pagination" aria-label="Review result pages">
             <button
               type="button"
-              className="secondary"
+              className="glass-button glass-button--secondary"
               onClick={() => setPage((current) => Math.max(1, current - 1))}
               disabled={currentPage === 1}
             >
@@ -781,7 +848,7 @@ export function ReviewQueue({
             </span>
             <button
               type="button"
-              className="secondary"
+              className="glass-button glass-button--secondary"
               onClick={() =>
                 setPage((current) => Math.min(pageCount, current + 1))
               }
@@ -792,23 +859,21 @@ export function ReviewQueue({
           </nav>
         )}
       </section>
+      {selectedItem?.kind === "stop" ? (
+        <section className="review-decision" aria-labelledby="decision-heading">
+          <h2 id="decision-heading">Decision</h2>
+          {renderDecisionActions(selectedItem)}
+        </section>
+      ) : (
+        <div className="review-column-empty" aria-hidden="true" />
+      )}
       <section
         className="review-comparison"
         aria-labelledby="comparison-heading"
       >
-        {selectedItem?.kind === "stop" && (
-          <section
-            className="review-decision"
-            aria-labelledby="decision-heading"
-          >
-            <h2 id="decision-heading">Decision</h2>
-            {renderDecisionActions(selectedItem)}
-          </section>
-        )}
         <h2 id="comparison-heading">Comparison</h2>
         {selectedItem !== undefined && renderDetail(selectedItem)}
       </section>
-      <div className="review-column-empty" aria-hidden="true" />
     </div>
   );
 }

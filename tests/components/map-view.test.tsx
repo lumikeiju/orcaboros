@@ -235,9 +235,13 @@ describe("MapLegend", () => {
     expect(toggle).toHaveAttribute("aria-expanded", "true");
     expect(toggle).toHaveAttribute("aria-controls", "map-legend-items");
     expect(items).not.toHaveAttribute("hidden");
+    expect(items).toHaveAttribute("tabindex", "0");
     expect(screen.getByText("Focused stop / closest candidate")).toBeVisible();
     expect(screen.getByText("Alternative candidates (2+)")).toBeVisible();
     expect(screen.getByText("Focused stop-to-candidate link")).toBeVisible();
+    expect(screen.getByText("Unmatched stop")).toBeVisible();
+    expect(screen.getByText("OSM candidate")).toBeVisible();
+    expect(screen.getByText("Reviewed")).toBeVisible();
 
     fireEvent.click(toggle);
 
@@ -245,6 +249,7 @@ describe("MapLegend", () => {
       screen.getByRole("button", { name: "Expand map legend" })
     ).toHaveAttribute("aria-expanded", "false");
     expect(items).toHaveAttribute("hidden");
+    expect(items).not.toHaveAttribute("tabindex");
 
     fireEvent.click(screen.getByRole("button", { name: "Expand map legend" }));
 
@@ -252,6 +257,7 @@ describe("MapLegend", () => {
       screen.getByRole("button", { name: "Collapse map legend" })
     ).toHaveAttribute("aria-expanded", "true");
     expect(items).not.toHaveAttribute("hidden");
+    expect(items).toHaveAttribute("tabindex", "0");
   });
 });
 
@@ -267,11 +273,17 @@ describe("MapView feature interactions", () => {
     await waitFor(() =>
       expect(maplibreState.maps[0]?.layers).toEqual(
         expect.arrayContaining([
+          "map-processed-casing",
+          "map-processed",
           "map-focus-candidates-primary",
           "map-focus-candidates-alternative",
           "map-focus-markers"
         ])
       )
+    );
+    const layers = maplibreState.maps[0]?.layers ?? [];
+    expect(layers.indexOf("map-processed-casing")).toBeLessThan(
+      layers.indexOf("map-processed")
     );
   });
 

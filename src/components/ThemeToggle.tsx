@@ -20,7 +20,7 @@ export function ThemeToggle({
   return (
     <button
       type="button"
-      className="theme-toggle secondary"
+      className="theme-toggle glass-button glass-button--secondary"
       aria-label={`Switch to ${nextTheme} mode`}
       aria-pressed={theme === "dark"}
       onClick={() => onThemeChange(nextTheme)}

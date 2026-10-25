@@ -19,7 +19,7 @@ const stop: EligibleStop = {
   longitude: -122.2,
   locationKind: "platform",
   parentStation: undefined,
-  rawFields: {},
+  rawFields: { stop_code: "CT-23" },
   identityTag: { key: "gtfs:stop_id:US-WA-CT", value: "23" }
 };
 
@@ -30,6 +30,7 @@ function makeStop(index: number): EligibleStop {
     stopId: String(index),
     stopName: `Stop ${index}`,
     stopNameExpanded: `Stop ${index}`,
+    rawFields: { stop_id: String(index), stop_code: `CT-${index}` },
     identityTag: { key: "gtfs:stop_id:US-WA-CT", value: String(index) }
   };
 }
@@ -132,12 +133,20 @@ describe("ReviewQueue", () => {
     );
 
     expect(
-      screen.getByRole("heading", { name: "Review Queue (1)" })
+      screen.getByRole("heading", { name: "Review Queue (1)", level: 2 })
     ).toBeInTheDocument();
     expect(
-      screen.getByRole("heading", { name: "Comparison" })
+      screen.getByRole("heading", { name: "Decision", level: 2 })
     ).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Comparison", level: 2 })
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Stop comparison")).not.toBeInTheDocument();
     expect(container.querySelectorAll(".review-columns > *")).toHaveLength(3);
+    const columns = [...container.querySelectorAll(".review-columns > *")];
+    expect(columns[0]).toHaveClass("review-queue-panel");
+    expect(columns[1]).toHaveClass("review-decision");
+    expect(columns[2]).toHaveClass("review-comparison");
     expect(
       screen.getByRole("columnheader", { name: "GTFS" })
     ).toBeInTheDocument();
@@ -165,14 +174,94 @@ describe("ReviewQueue", () => {
     ).toHaveLength(0);
     expect(tagFieldCount(container, "public_transport")).toBe(2);
     expect(screen.getByText("platform")).toBeInTheDocument();
+    expect(screen.getByText("US-WA-CT • CT-23 • platform")).toBeInTheDocument();
 
     expect(container.querySelector("li[role='button']")).toBeNull();
-    fireEvent.click(
-      screen.getByRole("button", {
-        name: "Focus State Avenue & 92nd Street NE on the map"
-      })
+    const locateButton = screen.getByRole("button", {
+      name: "Focus State Avenue & 92nd Street NE on the map"
+    });
+    expect(locateButton).toHaveAttribute("title", "Locate on map");
+    expect(locateButton.querySelector("svg")).toHaveAttribute(
+      "aria-hidden",
+      "true"
     );
+    expect(locateButton).not.toHaveTextContent("Locate on map");
+    fireEvent.click(locateButton);
     expect(onFocusFeature).toHaveBeenCalledWith(stop.featureId);
+    expect(
+      container.querySelector(".review-card-heading + .review-card-status-row")
+    ).toBeInTheDocument();
+    expect(
+      container.querySelector(
+        ".review-card-heading .category, .review-card-heading .state"
+      )
+    ).toBeNull();
+    expect(locateButton.closest(".review-card-heading")).toBeNull();
+    expect(locateButton.closest(".review-card-status-row")).toBeInTheDocument();
+    expect(
+      container.querySelector(".review-card-states .category")
+    ).toBeInTheDocument();
+    expect(
+      container.querySelector(".review-card-states .state")
+    ).toBeInTheDocument();
+  });
+
+  it("shows a placeholder when a stop has no stop code", () => {
+    const stopWithoutCode = { ...stop, rawFields: {} };
+    render(
+      <ReviewQueue
+        stops={[stopWithoutCode]}
+        matches={new Map()}
+        reviews={new Map()}
+        onAction={vi.fn()}
+        onFocusFeature={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText("US-WA-CT • — • platform")).toBeInTheDocument();
+  });
+
+  it("allows all result filters to be cleared and reopens them from the empty state", () => {
+    const { container } = render(
+      <ReviewQueue
+        stops={[stop]}
+        matches={new Map()}
+        reviews={new Map()}
+        focusedFeatureId={stop.featureId}
+        onAction={vi.fn()}
+        onFocusFeature={vi.fn()}
+      />
+    );
+    const filterDetails = container.querySelector("details.review-filters");
+
+    expect(filterDetails).not.toHaveAttribute("open");
+    fireEvent.click(screen.getByText("Filters"));
+    expect(filterDetails).toHaveAttribute("open");
+    expect(
+      screen.getByRole("group", { name: "Show results" })
+    ).toBeInTheDocument();
+
+    for (const category of ["new", "removed", "moved"] as const) {
+      const toggle = screen.getByRole("switch", {
+        name: `Show ${category} results`
+      });
+      expect(toggle).toHaveAttribute("aria-checked", "true");
+      fireEvent.click(toggle);
+      expect(toggle).toHaveAttribute("aria-checked", "false");
+    }
+    expect(
+      screen.getByRole("switch", { name: "Show exact results" })
+    ).toHaveAttribute("aria-checked", "false");
+    expect(screen.getByText("0 results")).toBeInTheDocument();
+    expect(container.querySelectorAll(".review-list > li")).toHaveLength(0);
+
+    const checkFilters = screen.getByRole("button", {
+      name: "Check filters?"
+    });
+    fireEvent.click(screen.getByText("Filters"));
+    expect(filterDetails).not.toHaveAttribute("open");
+    fireEvent.click(checkFilters);
+    expect(filterDetails).toHaveAttribute("open");
   });
 
   it("shows every GTFS-mapped tag and OSM candidate tag", () => {
@@ -499,6 +588,7 @@ describe("ReviewQueue", () => {
       />
     );
 
+    fireEvent.click(screen.getByText("Filters"));
     expect(
       screen.getByRole("switch", { name: "Show exact results" })
     ).toHaveAttribute("aria-checked", "true");
@@ -528,9 +618,12 @@ describe("ReviewQueue", () => {
       />
     );
 
-    expect(
-      screen.getByRole("button", { name: "Focus OSM node 90 on the map" })
-    ).toHaveClass("is-focused");
+    const focusButton = screen.getByRole("button", {
+      name: "Focus OSM node 90 on the map"
+    });
+    expect(focusButton).toHaveClass("is-focused");
+    expect(focusButton.closest(".review-card-heading")).toBeNull();
+    expect(focusButton.closest(".review-card-status-row")).toBeInTheDocument();
     expect(
       screen.getByRole("heading", { name: "Node 90" })
     ).toBeInTheDocument();

@@ -1,33 +1,22 @@
 # Mapping profiles
 
-A mapping profile is versioned JSON. It declares source-feed identities, OSM tag rules, and matching radii. The browser builds a profile dictionary keyed by normalized feed ID from the stock profile definitions in `src/profiles/`. When an editable feed ID in the upload step matches a dictionary entry, that feed's profile becomes active automatically. Profiles remain out of the workflow until a feed matches them.
+A schema-v1 JSON profile defines source feeds, OSM tag rules, name and geometry settings, and matching radii. Import or export the active profile in the editor. Rules are data only: they cannot contain code, templates, arbitrary filters, or Overpass QL.
 
-The active profile can still be exported or imported as JSON. A rule cannot contain code, templates, arbitrary filters, or Overpass QL.
+## Feed selection and input
 
-## Source feeds
+- Stock profiles cover a set of feeds. Each is `src/profiles/<FEED_ID>.json`; for example, [King County Metro (US-WA-KCM.json)](../src/profiles/US-WA-KCM.json).
+- A feed ID defaults to the ZIP filename and can be edited in the upload step; it is never inferred from `agency.txt` or another schedule file. If every selected ID has a stock profile, those profiles are combined. Otherwise the app creates a blank custom profile for the selected feeds. Custom IDs do not enter the stock registry. Consolidated feed `US-WA-PSC` is rejected.
+- Only local `stops.txt` is read. It requires `stop_id`, `stop_name`, `stop_lat`, and `stop_lon`; blank or `0` `location_type` means platform, and `1` means station. Unsupported or invalid rows are skipped with diagnostics; duplicate stop IDs fail that feed's import.
 
-The stock profile dictionary contains one profile for each of the nine individual Puget Sound archives. Each profile is stored as `src/profiles/FEED.json`, using the feed ID as the filename:
+## Mapping and review
 
-`US-WA-CT`, `US-WA-ET`, `US-WA-IT`, `US-WA-KCM`, `US-WA-KT`, `US-WA-PT`, `US-WA-SCM`, `US-WA-ST`, and `US-WA-WSF`.
+- `mappingRules` maps any `stops.txt` header or computed field (including `stop_name_expanded`, `source_feed_id`, and `source_feed_name`) to an OSM key. Values can be constants, fields, or source metadata; `appliesTo` can limit a rule by feed or location kind. Empty values are omitted, and profile validation checks keys and values.
+- Every stock profile maps `stop_name_expanded` to `name`. Street-name cleanup is enabled by default; it capitalizes all-uppercase names and expands supported US street abbreviations and directions. Raw `stop_name` remains available. Changing profile settings reprocesses stops and invalidates candidates and review state.
+- `stop_id` is not mapped by default. OSM identity tags (`gtfs:stop_id:<FEED_ID>`) can help find and match existing features, but are exported only if a profile explicitly maps them.
+- Per-feed `additionalTags` supports constants, fields, and source metadata; stock profiles use it for `public_transport=platform` and `highway=bus_stop` on platforms. Per-feed `removeKeys` proposes reviewable removals from matched elements only; an active GTFS mapping takes precedence, and new elements are unaffected. Unmapped OSM tags are preserved, and differing values default to keeping the current value until explicitly changed.
 
-For example, the King County Metro profile is [`src/profiles/US-WA-KCM.json`](../src/profiles/US-WA-KCM.json).
+## Geometry and defaults
 
-The consolidated `US-WA-PSC` feed is rejected before profile lookup and is also invalid in custom profile JSON. A selected filename such as `US-WA-KCM.zip` derives the identity `US-WA-KCM`; the importer never infers ownership from `agency.txt` or another schedule file. Multiple known feeds use one active profile containing the selected source definitions.
-
-An otherwise valid feed ID without a dictionary entry receives a blank custom profile for the current session, so its mappings must be defined explicitly. This does not add the ID to the stock dictionary.
-
-## Direct fields
-
-The importer records every header in the uploaded `stops.txt` file and the profile editor renders those headers as an editable field-to-OSM-tag table. A field row with a blank OSM key is ignored. A rule may reference any safe GTFS header, as well as the computed fields `stop_name_expanded`, `source_feed_id`, and `source_feed_name`; empty field values omit a proposed tag. After import, each field row includes a read-only example using a randomly selected source row from the middle 50% of the file. Stock and newly created custom profiles do not map `stop_id` by default. Add an OSM key to the `stop_id` field if the profile should export it; no identity tag is injected independently of the profile. Identity tags already present in OSM may still be used internally to find and match existing features.
-
-Each stock profile maps the cleaned computed field `stop_name_expanded` to the OSM `name` tag. Cleanup converts all-uppercase names to first-capitalized words and expands the US street-name abbreviations and directional forms maintained in `local-storage/streetname`. The raw GTFS `stop_name` remains available for profile-specific mappings. The `sourceFeeds` entry owns an `additionalTags` array for feed-specific constant, field, and source-metadata rules; stock profiles use it for `public_transport=platform` and `highway=bus_stop` on platforms. It also owns a `removeKeys` list for OSM keys to propose removing from matched elements. These removals are shown in tag decisions and can be kept or removed during review; newly created elements are unaffected. An active GTFS mapping for the same key takes precedence. The profile editor renders and edits both lists inside the corresponding feed card, so changes to one feed do not affect another feed in a combined profile. Unconfigured OSM tags are preserved. A genuinely differing value defaults to `keep-current`; replacing it requires an explicit review action. When street-name cleanup is enabled for the mapped `name` field, the cleaned GTFS name is applied during export, including persisted review state. The review comparison lists all profile-generated GTFS tags alongside all tags on the OSM candidate, including keys present on only one side; configured removals are highlighted; coordinates and match distance are shown separately as metadata.
-
-Profiles imported from the earlier schema may still put non-direct rules in the top-level `mappingRules` array. Validation migrates those legacy rules into `sourceFeeds[].additionalTags` using their existing source-feed applicability, while retaining direct GTFS field mappings at the top level.
-
-Each source feed also has a `geometryTarget` setting. `osm` (the default) keeps a selected OSM element at its snapshot location and applies the reviewed GTFS tag changes to that element. For node candidates, `gtfs` keeps the selected OSM node ID and version but writes the GTFS stop coordinates in the OSM Change modification, moving the existing node instead of creating a replacement. Platform ways retain their member geometry for both settings; their center is used only for matching, because moving a way requires changing its member nodes. New stops selected for creation are always created at their GTFS coordinates. The review comparison only highlights coordinate differences when the selected geometry target will apply them. If multiple selected elements share an OSM element, their target coordinates must agree before an export can be generated.
-
-Each source feed also has a `streetNameCleanup` setting, enabled by default. When enabled, the computed `stop_name_expanded` field converts all-uppercase names to first-capitalized words and expands the US street-name abbreviations and directional forms maintained in `local-storage/streetname`. Disabling it leaves `stop_name_expanded` equal to the trimmed raw `stop_name` for that feed. Changing the setting re-applies it to already imported stops and invalidates retrieved OSM candidates and review state.
-
-## Validation
-
-Profile JSON is validated before import. Source IDs, geometry targets, street-name cleanup settings, mapping keys, removal keys, tag values, applicability values, radii, duplicate source IDs, and the schema version are checked. Profiles imported without `geometryTarget` use the backwards-compatible `osm` default. Profiles imported without `streetNameCleanup` use the backwards-compatible enabled default. Profiles imported without `removeKeys` have no configured key removals. Candidate radius defaults to 50 m and the exact identity auto-match radius defaults to 10 m. Custom profiles may change those values only within the safe bounded range enforced by `validateMappingProfile`.
+- `geometryTarget: "osm"` (default) preserves a selected OSM element's location. `"gtfs"` moves selected nodes to the GTFS coordinates; platform ways always retain their member geometry, using their center only for matching. New elements use GTFS coordinates. If stops sharing an OSM element require different coordinates, export is blocked.
+- Candidate and exact-identity auto-match radii default to 50 m and 10 m. Each must be greater than 0 and at most 10,000 m; the auto-match radius cannot exceed the candidate radius.
+- For older profiles, missing `geometryTarget`, `streetNameCleanup`, and `removeKeys` default to `"osm"`, enabled, and empty. Legacy non-direct rules in `mappingRules` migrate to the applicable feed's `additionalTags`.
