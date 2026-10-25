@@ -16,6 +16,8 @@ Use `.glass-background glass-background--level-1` when the surface should retain
 
 The shared `--glass-border`, `--glass-divider`, radius, and blur tokens keep surfaces consistent. Use semantic diff, status, and accent tokens for meaningful color; avoid using color alone to communicate state.
 
+Style library-generated surfaces, such as MapLibre popups and attribution controls, with the same theme-aware glass and text tokens. Use Level 3 for dense floating content and keep its controls visibly focusable.
+
 ## Scrollbars
 
 Apply `.glass-scrollbar` to independently scrollable surfaces. Its track uses a Level 3 high-frost background, with shared theme tokens for the thumb and hover state. Keep the width and rounded treatment consistent for vertical and horizontal scrolling.
@@ -27,6 +29,7 @@ Native buttons use the primary glass treatment by default. Add `.glass-button` w
 - `.glass-button--primary` for primary actions
 - `.glass-button--secondary` for supporting actions
 - `.glass-button--accent` for emphasized alternate actions
+- `.glass-button--warning` for high-attention warning acknowledgements
 - `.glass-button--success` and `.glass-button--danger` for outcome actions
 - `.glass-button--quiet` for low-emphasis controls
 

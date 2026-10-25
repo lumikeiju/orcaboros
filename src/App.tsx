@@ -112,13 +112,7 @@ type OsmProgressState = {
 
 type WorkflowStepId = "upload" | "profile" | "retrieve" | "review" | "export";
 type WorkflowStepStatusKind =
-  | "attention"
-  | "complete"
-  | "optional"
-  | "progress"
-  | "ready"
-  | "start"
-  | "waiting";
+  "attention" | "complete" | "progress" | "ready" | "start" | "waiting";
 type WorkflowStepStatus = {
   label: string;
   kind: WorkflowStepStatusKind;
@@ -198,7 +192,7 @@ export function App(): ReactElement {
     WorkflowStepId | undefined
   >();
   const [railWidth, setRailWidth] = useState(25);
-  const [reviewHeight, setReviewHeight] = useState(33);
+  const [reviewHeight, setReviewHeight] = useState(46);
   const [endpoint, setEndpoint] = useState("");
   const [styleUrl, setStyleUrl] = useState("");
   const [status, setStatus] = useState("Upload GTFS ZIPs to begin.");
@@ -1038,13 +1032,13 @@ export function App(): ReactElement {
       id: "profile",
       number: "2",
       label: "Profile",
-      detail: "Review field mappings (optional)"
+      detail: "Review field mappings"
     },
     {
       id: "retrieve",
       number: "3",
       label: "Retrieve",
-      detail: "Retrieve nearby OSM data"
+      detail: "Retrieve OSM data"
     },
     {
       id: "review",
@@ -1089,7 +1083,9 @@ export function App(): ReactElement {
             ? { label: "Fix selection", kind: "attention" }
             : { label: "Ready", kind: "ready" }
           : { label: "Start here", kind: "start" },
-    profile: { label: "Optional", kind: "optional" },
+    profile: hasImportedStops
+      ? { label: "Ready", kind: "ready" }
+      : { label: "Waiting", kind: "waiting" },
     retrieve: retrievalComplete
       ? { label: "Retrieved", kind: "complete" }
       : osmRequestActive
@@ -1216,7 +1212,7 @@ export function App(): ReactElement {
               </div>
               <div
                 id="reset-confirmation"
-                className="reset-confirmation"
+                className="reset-confirmation glass-pane glass-pane--level-3 glass-pane--compact"
                 role="group"
                 aria-labelledby="reset-confirmation-heading"
                 hidden={!resetConfirmationOpen}
@@ -1236,7 +1232,7 @@ export function App(): ReactElement {
                   </button>
                   <button
                     type="button"
-                    className="reset-confirmation-delete"
+                    className="reset-confirmation-delete glass-button glass-button--danger"
                     onClick={() => void confirmSessionReset()}
                     disabled={loading}
                   >
@@ -1251,7 +1247,7 @@ export function App(): ReactElement {
               )}
               {feedSummaries.length > 0 && (
                 <div
-                  className="diagnostics"
+                  className="diagnostics glass-pane glass-pane--level-3 glass-pane--compact"
                   aria-label="GTFS import diagnostics"
                 >
                   {feedSummaries.map((summary) => (
@@ -1279,7 +1275,7 @@ export function App(): ReactElement {
               {hasImportedStops && (
                 <button
                   type="button"
-                  className="workflow-next-step"
+                  className="workflow-next-step glass-button--accent"
                   onClick={() => navigateToWorkflowStep("retrieve")}
                 >
                   Continue to OSM retrieval
@@ -1307,11 +1303,9 @@ export function App(): ReactElement {
                   ])
                 )
               }
-              uploadedFeedIds={
-                feedSummaries.length > 0
-                  ? feedSummaries.map((summary) => summary.sourceFeedId)
-                  : archives.map((archive) => archive.sourceFeedId)
-              }
+              uploadedFeedIds={feedSummaries.map(
+                (summary) => summary.sourceFeedId
+              )}
               exampleStops={stops}
               exampleRowCounts={exampleRowCounts}
               onChange={(nextProfile) => void handleProfileChange(nextProfile)}
@@ -1320,7 +1314,7 @@ export function App(): ReactElement {
             {hasImportedStops && (
               <button
                 type="button"
-                className="workflow-next-step"
+                className="workflow-next-step glass-button--accent"
                 onClick={() => navigateToWorkflowStep("retrieve")}
               >
                 Continue to OSM retrieval
@@ -1425,7 +1419,7 @@ export function App(): ReactElement {
                   {retrievalComplete && (
                     <button
                       type="button"
-                      className="workflow-next-step"
+                      className="workflow-next-step glass-button--accent"
                       onClick={openReviewQueue}
                     >
                       Continue to review
@@ -1698,7 +1692,7 @@ export function App(): ReactElement {
           ) : (
             <section
               id="review-step"
-              className="review-empty"
+              className="review-empty glass-background glass-background--level-1"
               aria-labelledby="review-empty-heading"
             >
               <p className="eyebrow">Conflation queue</p>

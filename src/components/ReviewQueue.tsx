@@ -838,6 +838,14 @@ export function ReviewQueue({
             <button
               type="button"
               className="glass-button glass-button--secondary"
+              onClick={() => setPage(1)}
+              disabled={currentPage === 1}
+            >
+              First
+            </button>
+            <button
+              type="button"
+              className="glass-button glass-button--secondary"
               onClick={() => setPage((current) => Math.max(1, current - 1))}
               disabled={currentPage === 1}
             >
@@ -855,6 +863,14 @@ export function ReviewQueue({
               disabled={currentPage === pageCount}
             >
               Next
+            </button>
+            <button
+              type="button"
+              className="glass-button glass-button--secondary"
+              onClick={() => setPage(pageCount)}
+              disabled={currentPage === pageCount}
+            >
+              Last
             </button>
           </nav>
         )}

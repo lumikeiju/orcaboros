@@ -46,7 +46,7 @@ describe("App workflow sidebar", () => {
       name: /1 Upload Upload GTFS ZIPs/
     });
     const profileStep = screen.getByRole("button", {
-      name: /2 Profile Review field mappings \(optional\)/
+      name: /2 Profile Review field mappings/
     });
 
     expect(importStep).toHaveAttribute("aria-expanded", "false");
@@ -95,7 +95,7 @@ describe("App workflow sidebar", () => {
 
     fireEvent.click(
       screen.getByRole("button", {
-        name: /3 Retrieve Retrieve nearby OSM data/
+        name: /3 Retrieve Retrieve OSM data/
       })
     );
     expect(
@@ -124,8 +124,12 @@ describe("App workflow sidebar", () => {
     render(<App />);
 
     expect(screen.getByText("Start here")).toBeInTheDocument();
-    expect(screen.getByText("Optional")).toBeInTheDocument();
-    expect(screen.getAllByText("Waiting")).toHaveLength(3);
+    expect(
+      screen.getByRole("button", {
+        name: "2 Profile Review field mappings. Waiting"
+      })
+    ).toBeInTheDocument();
+    expect(screen.getAllByText("Waiting")).toHaveLength(4);
 
     openUploadStep();
     fireEvent.change(screen.getByLabelText("Choose or drop GTFS ZIPs"), {
@@ -137,7 +141,12 @@ describe("App workflow sidebar", () => {
     expect(screen.getByText("Ready")).toBeInTheDocument();
     expect(
       screen.getByRole("button", {
-        name: /3 Retrieve Retrieve nearby OSM data/
+        name: "2 Profile Review field mappings. Waiting"
+      })
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", {
+        name: /3 Retrieve Retrieve OSM data/
       })
     ).not.toBeDisabled();
   });
@@ -153,13 +162,13 @@ describe("App workflow sidebar", () => {
     });
 
     expect(sidebarHandle).toHaveAttribute("aria-valuenow", "25");
-    expect(reviewHandle).toHaveAttribute("aria-valuenow", "33");
+    expect(reviewHandle).toHaveAttribute("aria-valuenow", "46");
 
     fireEvent.keyDown(sidebarHandle, { key: "ArrowRight" });
     fireEvent.keyDown(reviewHandle, { key: "ArrowUp", shiftKey: true });
 
     expect(sidebarHandle).toHaveAttribute("aria-valuenow", "26");
-    expect(reviewHandle).toHaveAttribute("aria-valuenow", "38");
+    expect(reviewHandle).toHaveAttribute("aria-valuenow", "51");
 
     fireEvent.keyDown(sidebarHandle, { key: "Home" });
     fireEvent.keyDown(reviewHandle, { key: "End" });
@@ -224,8 +233,8 @@ describe("App workflow sidebar", () => {
     expect(importButton).toHaveTextContent("Process selected GTFS ZIPs");
   });
 
-  it("applies the matching feed profile when a known ID is selected", () => {
-    render(<App />);
+  it("hides a stock profile until its matching feed is imported", () => {
+    const { container } = render(<App />);
     openUploadStep();
 
     fireEvent.change(screen.getByLabelText("Choose or drop GTFS ZIPs"), {
@@ -235,19 +244,20 @@ describe("App workflow sidebar", () => {
     });
     fireEvent.click(
       screen.getByRole("button", {
-        name: /2 Profile Review field mappings \(optional\)/
+        name: /2 Profile Review field mappings/
       })
     );
 
+    expect(container.querySelectorAll(".profile-feed-section")).toHaveLength(0);
     expect(
       screen.getByText(
-        "King County Metro mapping profile applies to US-WA-KCM."
+        "Import a matching GTFS feed to view its mapping options."
       )
     ).toBeInTheDocument();
   });
 
-  it("uses an editable custom profile for an unknown feed ID", () => {
-    render(<App />);
+  it("hides a custom profile until its matching feed is imported", () => {
+    const { container } = render(<App />);
     openUploadStep();
 
     fireEvent.change(screen.getByLabelText("Choose or drop GTFS ZIPs"), {
@@ -257,12 +267,15 @@ describe("App workflow sidebar", () => {
     });
     fireEvent.click(
       screen.getByRole("button", {
-        name: /2 Profile Review field mappings \(optional\)/
+        name: /2 Profile Review field mappings/
       })
     );
 
+    expect(container.querySelectorAll(".profile-feed-section")).toHaveLength(0);
     expect(
-      screen.getByText("Custom feed mapping applies to US-WA-NEW.")
+      screen.getByText(
+        "Import a matching GTFS feed to view its mapping options."
+      )
     ).toBeInTheDocument();
     expect(
       screen.queryByText(/Unsupported GTFS ZIPs will be skipped/i)

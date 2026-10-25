@@ -548,6 +548,36 @@ describe("ReviewQueue", () => {
     ).toBeInTheDocument();
   });
 
+  it("jumps directly to the first and last result pages", () => {
+    const stops = Array.from({ length: 21 }, (_, index) => makeStop(index + 1));
+    render(
+      <ReviewQueue
+        stops={stops}
+        matches={new Map()}
+        reviews={new Map()}
+        onAction={vi.fn()}
+        onFocusFeature={vi.fn()}
+      />
+    );
+
+    const firstPageButton = screen.getByRole("button", { name: "First" });
+    const lastPageButton = screen.getByRole("button", { name: "Last" });
+    expect(firstPageButton).toBeDisabled();
+    expect(lastPageButton).toBeEnabled();
+
+    fireEvent.click(lastPageButton);
+    expect(screen.getByText("Page 3 of 3")).toBeInTheDocument();
+    expect(screen.getByText("Showing 21-21 of 21 results")).toBeInTheDocument();
+    expect(firstPageButton).toBeEnabled();
+    expect(lastPageButton).toBeDisabled();
+
+    fireEvent.click(firstPageButton);
+    expect(screen.getByText("Page 1 of 3")).toBeInTheDocument();
+    expect(screen.getByText("Showing 1-10 of 21 results")).toBeInTheDocument();
+    expect(firstPageButton).toBeDisabled();
+    expect(lastPageButton).toBeEnabled();
+  });
+
   it("reveals and focuses a map-selected item on another page", () => {
     const stops = Array.from({ length: 11 }, (_, index) => makeStop(index + 1));
     render(

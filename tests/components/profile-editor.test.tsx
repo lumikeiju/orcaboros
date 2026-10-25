@@ -222,6 +222,48 @@ describe("ProfileEditor", () => {
     ).toBeInTheDocument();
   });
 
+  it("shows feed sections only for imported matching feeds", () => {
+    const profile = getProfileForFeedIds(["US-WA-KCM", "US-WA-ST"]);
+    if (profile === undefined) {
+      throw new Error("combined fixture profile is missing");
+    }
+    const onChange = vi.fn();
+    const onReset = vi.fn();
+    const { container, rerender } = render(
+      <ProfileEditor
+        profile={profile}
+        uploadedFeedIds={[]}
+        onChange={onChange}
+        onReset={onReset}
+      />
+    );
+
+    expect(container.querySelectorAll(".profile-feed-section")).toHaveLength(0);
+    expect(
+      screen.getByText(
+        "Import a matching GTFS feed to view its mapping options."
+      )
+    ).toBeInTheDocument();
+
+    rerender(
+      <ProfileEditor
+        profile={profile}
+        uploadedFeedIds={["US-WA-KCM"]}
+        onChange={onChange}
+        onReset={onReset}
+      />
+    );
+
+    expect(container.querySelectorAll(".profile-feed-section")).toHaveLength(1);
+    expect(
+      screen.getByText("King County Metro (US-WA-KCM)")
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Sound Transit (US-WA-ST)")).toBeNull();
+    expect(
+      screen.getByText("2 feed mapping profiles applies to US-WA-KCM.")
+    ).toBeInTheDocument();
+  });
+
   it("keeps additional tag edits inside their feed card", () => {
     const profile = getProfileForFeedIds(["US-WA-KCM", "US-WA-ST"]);
     if (profile === undefined) {

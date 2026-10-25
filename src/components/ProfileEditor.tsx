@@ -115,7 +115,7 @@ export function ProfileEditor({
   profile,
   availableFields = [],
   availableFieldsByFeed = new Map(),
-  uploadedFeedIds = [],
+  uploadedFeedIds,
   exampleStops = [],
   exampleRowCounts = new Map(),
   onChange,
@@ -141,16 +141,12 @@ export function ProfileEditor({
       ])
     );
   }, [exampleRowCounts, exampleStops]);
-  const uploadedFeedIdSet = new Set(uploadedFeedIds);
-  const feedSections = profile.sourceFeeds.filter(
-    (sourceFeed) =>
-      sourceFeed.enabled &&
-      (uploadedFeedIdSet.size === 0 || uploadedFeedIdSet.has(sourceFeed.id))
+  const uploadedFeedIdSet = new Set(
+    uploadedFeedIds ?? profile.sourceFeeds.map((sourceFeed) => sourceFeed.id)
   );
-  const visibleFeedSections =
-    feedSections.length > 0
-      ? feedSections
-      : profile.sourceFeeds.filter((sourceFeed) => sourceFeed.enabled);
+  const visibleFeedSections = profile.sourceFeeds.filter(
+    (sourceFeed) => sourceFeed.enabled && uploadedFeedIdSet.has(sourceFeed.id)
+  );
 
   function updateRadius(
     field: "candidateRadiusMeters" | "autoIdRadiusMeters",
@@ -422,10 +418,16 @@ export function ProfileEditor({
           />
         </label>
       </div>
-      <p>
-        {profile.name} applies to{" "}
-        {profile.sourceFeeds.map((source) => source.id).join(", ")}.
-      </p>
+      {visibleFeedSections.length > 0 ? (
+        <p>
+          {profile.name} applies to{" "}
+          {visibleFeedSections.map((sourceFeed) => sourceFeed.id).join(", ")}.
+        </p>
+      ) : (
+        <p className="workflow-step-hint">
+          Import a matching GTFS feed to view its mapping options.
+        </p>
+      )}
       <div className="profile-feed-sections">
         {visibleFeedSections.map((sourceFeed: ProfileSourceFeed) => {
           const mappingFields = fieldsForFeed(sourceFeed.id);

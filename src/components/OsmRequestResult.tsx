@@ -58,7 +58,7 @@ export function OsmRequestResult({
 
   return (
     <div
-      className={`osm-query-result is-${result.kind}`}
+      className={`osm-query-result glass-pane glass-pane--level-3 glass-pane--compact is-${result.kind}`}
       role={result.kind === "failed" ? "alert" : "status"}
     >
       <strong>{heading}</strong>

@@ -16,7 +16,11 @@ export function ProgressIndicator({
   const isDeterminate = value !== undefined && max !== undefined;
 
   return (
-    <div className="progress-indicator" role="status" aria-live="polite">
+    <div
+      className="progress-indicator glass-pane glass-pane--level-3 glass-pane--compact"
+      role="status"
+      aria-live="polite"
+    >
       <div className="progress-indicator-heading">
         <strong>{label}</strong>
         <span>{detail}</span>

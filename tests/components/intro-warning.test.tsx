@@ -26,11 +26,11 @@ describe("IntroWarning", () => {
         /responsible for checking that each GTFS feed's license/i
       )
     ).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", {
-        name: /I have read these warnings/
-      })
-    ).toHaveFocus();
+    const continueButton = screen.getByRole("button", {
+      name: /I have read these warnings/
+    });
+    expect(continueButton).toHaveClass("glass-button--warning");
+    expect(continueButton).toHaveFocus();
   });
 
   it("keeps keyboard focus in the warning until the user continues", () => {
