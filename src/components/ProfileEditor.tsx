@@ -12,13 +12,15 @@ import {
   ProfileSourceFeed,
   MappingRule,
   ProfileValidationError,
-  mappingFieldValue
+  mappingFieldValue,
+  sourceMetadataValue
 } from "../domain/profile";
 import {
   DEFAULT_GEOMETRY_TARGET,
   type GeometryTarget
 } from "../domain/source-feed";
 import { readUtf8Stream } from "../infrastructure/browser/text-stream";
+import { downloadTextFile } from "../infrastructure/browser/download";
 import { parseProfileJson, serializeProfile } from "../profiles";
 
 type ProfileEditorProps = {
@@ -27,6 +29,7 @@ type ProfileEditorProps = {
   availableFieldsByFeed?: ReadonlyMap<string, readonly string[]>;
   uploadedFeedIds?: readonly string[];
   autoMatchedStockProfile?: boolean;
+  disabled?: boolean;
   exampleStops?: readonly EligibleStop[];
   exampleRowCounts?: ReadonlyMap<string, number>;
   onChange: (profile: MappingProfile) => void;
@@ -94,7 +97,7 @@ function mappingRuleValue(rule: MappingRule, stop: EligibleStop): string {
   if (rule.value.kind === "field") {
     return mappingFieldValue(rule.value.field, stop);
   }
-  return stop.sourceFeedMetadata?.[rule.value.key] ?? "";
+  return sourceMetadataValue(rule.value.key, stop);
 }
 
 function exampleText(
@@ -118,12 +121,14 @@ export function ProfileEditor({
   availableFieldsByFeed = new Map(),
   uploadedFeedIds,
   autoMatchedStockProfile = false,
+  disabled = false,
   exampleStops = [],
   exampleRowCounts = new Map(),
   onChange,
   onReset
 }: ProfileEditorProps): ReactElement {
   const [jsonError, setJsonError] = useState<string | undefined>();
+  const [radiusError, setRadiusError] = useState<string | undefined>();
   const exampleStopsByFeed = useMemo(() => {
     const stopsByFeed = new Map<string, EligibleStop[]>();
     for (const stop of exampleStops) {
@@ -155,10 +160,21 @@ export function ProfileEditor({
     value: string
   ): void {
     const radius = Number(value);
-    if (!Number.isFinite(radius) || radius <= 0) {
+    const nextProfile = { ...profile, [field]: radius };
+    if (!Number.isFinite(radius) || radius <= 0 || radius > 10000) {
+      setRadiusError(
+        "Radii must be greater than 0 and no greater than 10,000 meters."
+      );
       return;
     }
-    onChange({ ...profile, [field]: radius });
+    if (nextProfile.autoIdRadiusMeters > nextProfile.candidateRadiusMeters) {
+      setRadiusError(
+        "The auto-match radius cannot exceed the candidate radius."
+      );
+      return;
+    }
+    setRadiusError(undefined);
+    onChange(nextProfile);
   }
 
   function updateGeometryTarget(
@@ -342,15 +358,20 @@ export function ProfileEditor({
   }
 
   function exportProfile(): void {
-    const blob = new Blob([serializeProfile(profile)], {
-      type: "application/json"
-    });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = `${profile.id}.json`;
-    anchor.click();
-    URL.revokeObjectURL(url);
+    try {
+      downloadTextFile(
+        serializeProfile(profile),
+        `${profile.id}.json`,
+        "application/json"
+      );
+      setJsonError(undefined);
+    } catch (error: unknown) {
+      setJsonError(
+        error instanceof Error
+          ? error.message
+          : "The profile could not be exported."
+      );
+    }
   }
 
   function importProfile(event: ChangeEvent<HTMLInputElement>): void {
@@ -399,8 +420,10 @@ export function ProfileEditor({
           Candidate radius (m)
           <input
             type="number"
-            min="1"
+            min="0"
+            step="any"
             max="10000"
+            disabled={disabled}
             value={profile.candidateRadiusMeters}
             onChange={(event) =>
               updateRadius("candidateRadiusMeters", event.target.value)
@@ -411,8 +434,10 @@ export function ProfileEditor({
           Auto-match radius
           <input
             type="number"
-            min="1"
-            max="10000"
+            min="0"
+            step="any"
+            max={profile.candidateRadiusMeters}
+            disabled={disabled}
             value={profile.autoIdRadiusMeters}
             onChange={(event) =>
               updateRadius("autoIdRadiusMeters", event.target.value)
@@ -420,6 +445,11 @@ export function ProfileEditor({
           />
         </label>
       </div>
+      {radiusError !== undefined && (
+        <p className="error" role="alert">
+          {radiusError}
+        </p>
+      )}
       {visibleFeedSections.length > 0 ? (
         <p>
           {profile.name} applies to{" "}
@@ -460,6 +490,7 @@ export function ProfileEditor({
                 <span>Geometry target</span>
                 <button
                   type="button"
+                  disabled={disabled}
                   className={`glass-toggle profile-geometry-toggle${
                     geometryTarget === "gtfs" ? " is-gtfs" : ""
                   }`}
@@ -501,6 +532,7 @@ export function ProfileEditor({
                 <span>Street name cleanup</span>
                 <button
                   type="button"
+                  disabled={disabled}
                   className={`glass-toggle profile-cleanup-toggle${
                     sourceFeed.streetNameCleanup ? " is-on" : ""
                   }`}
@@ -605,6 +637,7 @@ export function ProfileEditor({
                               <td>
                                 <input
                                   type="text"
+                                  disabled={disabled}
                                   value={rule?.key ?? ""}
                                   aria-label={fieldLabel}
                                   placeholder="Ignore field"
@@ -668,10 +701,11 @@ export function ProfileEditor({
                     </thead>
                     <tbody>
                       {additionalTags.map((rule, index) => (
-                        <tr key={`${mappingValueLabel(rule)}-${index}`}>
+                        <tr key={index}>
                           <td>
                             <input
                               type="text"
+                              disabled={disabled}
                               value={rule.key}
                               aria-label={`OSM tag key for ${mappingValueLabel(rule)}`}
                               onChange={(event) =>
@@ -687,6 +721,7 @@ export function ProfileEditor({
                             {rule.value.kind === "constant" ? (
                               <input
                                 type="text"
+                                disabled={disabled}
                                 value={rule.value.value}
                                 aria-label={`OSM tag value for ${mappingValueLabel(rule)}`}
                                 onChange={(event) =>
@@ -707,6 +742,7 @@ export function ProfileEditor({
                           <td className="mapping-table-actions">
                             <button
                               type="button"
+                              disabled={disabled}
                               className="icon-button secondary"
                               aria-label={`Remove ${mappingValueLabel(rule)}`}
                               title={`Remove ${mappingValueLabel(rule)}`}
@@ -731,6 +767,7 @@ export function ProfileEditor({
                 <div className="mapping-actions">
                   <button
                     type="button"
+                    disabled={disabled}
                     className="secondary"
                     onClick={() => addConstantTag(sourceFeed.id)}
                   >
@@ -788,6 +825,7 @@ export function ProfileEditor({
                           <tr key={index}>
                             <td>
                               <input
+                                disabled={disabled}
                                 type="text"
                                 value={key}
                                 aria-label={inputLabel}
@@ -803,6 +841,7 @@ export function ProfileEditor({
                             <td className="mapping-table-actions">
                               <button
                                 type="button"
+                                disabled={disabled}
                                 className="icon-button secondary"
                                 aria-label={removeLabel}
                                 title={removeLabel}
@@ -828,6 +867,7 @@ export function ProfileEditor({
                 <div className="mapping-actions">
                   <button
                     type="button"
+                    disabled={disabled}
                     className="secondary"
                     onClick={() => addOsmKeyToRemove(sourceFeed.id)}
                   >
@@ -847,7 +887,7 @@ export function ProfileEditor({
         })}
       </div>
       <div className="button-row">
-        <button type="button" onClick={exportProfile}>
+        <button type="button" onClick={exportProfile} disabled={disabled}>
           Export profile JSON
         </button>
         <label className="button-like" htmlFor="profile-file">
@@ -855,11 +895,17 @@ export function ProfileEditor({
           <input
             id="profile-file"
             type="file"
+            disabled={disabled}
             accept="application/json,.json"
             onChange={importProfile}
           />
         </label>
-        <button type="button" className="secondary" onClick={onReset}>
+        <button
+          type="button"
+          className="secondary"
+          onClick={onReset}
+          disabled={disabled}
+        >
           Reset stock profile
         </button>
       </div>

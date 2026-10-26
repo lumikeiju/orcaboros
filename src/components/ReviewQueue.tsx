@@ -6,8 +6,7 @@ import { haversineDistanceMeters } from "../domain/geo";
 import {
   FeatureReview,
   ReviewAction,
-  selectedElementRef,
-  TagResolution
+  selectedElementRef
 } from "../domain/review";
 import {
   DEFAULT_GEOMETRY_TARGET,
@@ -87,15 +86,6 @@ function selectionAction(element: OsmElement): ReviewAction {
     : { type: "select-match", nodeId: element.id };
 }
 
-function isSelected(
-  review: FeatureReview | undefined,
-  element: OsmElement
-): boolean {
-  const selected =
-    review === undefined ? undefined : selectedElementRef(review);
-  return selected !== undefined && elementKey(selected) === elementKey(element);
-}
-
 type DiffHighlight = "add" | "remove" | "both" | "none";
 
 type ReviewDiffRowProps = {
@@ -138,6 +128,90 @@ function ReviewDiffRow({
         </div>
       </td>
     </tr>
+  );
+}
+
+type ReviewMetadataRow = {
+  field: string;
+  gtfsValue: string;
+  osmValue: string;
+  highlight: DiffHighlight;
+};
+
+type ReviewMetadataTableProps = {
+  heading: string;
+  caption: string;
+  rows: readonly ReviewMetadataRow[];
+  distance?: string;
+};
+
+function ReviewMetadataTable({
+  heading,
+  caption,
+  rows,
+  distance
+}: ReviewMetadataTableProps): ReactElement {
+  return (
+    <section className="review-metadata">
+      <h4 className="review-metadata-heading">{heading}</h4>
+      <table className="review-metadata-table">
+        <caption className="visually-hidden">{caption}</caption>
+        <thead>
+          <tr>
+            <th scope="col">Field</th>
+            <th scope="col">GTFS</th>
+            <th scope="col">OSM</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map(({ field, gtfsValue, osmValue, highlight }) => {
+            const gtfsHighlighted = highlight === "add" || highlight === "both";
+            const osmHighlighted =
+              highlight === "remove" || highlight === "both";
+            return (
+              <tr key={field} className={`review-metadata-row is-${highlight}`}>
+                <th
+                  scope="row"
+                  className="review-metadata-field glass-pane glass-pane--level-3 glass-pane--compact"
+                >
+                  {field}
+                </th>
+                <td
+                  className={`review-metadata-value review-metadata-value-gtfs glass-pane glass-pane--level-3 glass-pane--compact${
+                    gtfsHighlighted ? " is-highlighted" : ""
+                  }`}
+                >
+                  {gtfsValue}
+                </td>
+                <td
+                  className={`review-metadata-value review-metadata-value-osm glass-pane glass-pane--level-3 glass-pane--compact${
+                    osmHighlighted ? " is-highlighted" : ""
+                  }`}
+                >
+                  {osmValue}
+                </td>
+              </tr>
+            );
+          })}
+          {distance !== undefined && (
+            <tr className="review-metadata-row is-none">
+              <th
+                scope="row"
+                className="review-metadata-field glass-pane glass-pane--level-3 glass-pane--compact"
+              >
+                Match distance
+              </th>
+              <td
+                colSpan={2}
+                className="review-metadata-value glass-pane glass-pane--level-3 glass-pane--compact"
+              >
+                {distance}
+              </td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+    </section>
   );
 }
 
@@ -329,12 +403,8 @@ export function ReviewQueue({
   }
 
   function renderStopCard(item: StopReviewItem): ReactElement {
-    const { stop, result, review } = item;
+    const { stop, review } = item;
     const stopCode = stop.rawFields.stop_code?.trim() || "—";
-    const selectedElement = getSelectedOsmElement(result, review, nodes);
-    const selectedElementIsOutsideCandidates =
-      selectedElement !== undefined &&
-      getCandidateMatch(result, selectedElement) === undefined;
     return (
       <li
         key={stop.featureId}
@@ -346,7 +416,7 @@ export function ReviewQueue({
           <div>
             <h3>{stop.stopNameExpanded}</h3>
             <p>
-              {stop.sourceFeedId} • {stopCode} • {stop.locationKind}
+              {stop.sourceFeedId} • Stop code: {stopCode} • {stop.locationKind}
             </p>
           </div>
         </div>
@@ -375,121 +445,6 @@ export function ReviewQueue({
             <MapLocateIcon />
           </button>
         </div>
-        {result?.kind === "auto-matched" && (
-          <fieldset>
-            <legend>Automatic evidence</legend>
-            <label className="choice">
-              <input
-                type="radio"
-                name={`candidate-${stop.featureId}`}
-                checked={isSelected(review, result.candidate.node)}
-                onChange={() =>
-                  onAction(
-                    stop.featureId,
-                    selectionAction(result.candidate.node)
-                  )
-                }
-              />
-              <span className="evidence">
-                Exact identity match at{" "}
-                {result.candidate.distanceMeters.toFixed(1)} m on OSM{" "}
-                {isOsmWay(result.candidate.node) ? "way" : "node"}{" "}
-                {result.candidate.node.id}.
-              </span>
-            </label>
-          </fieldset>
-        )}
-        {result?.kind === "review" && result.candidates.length > 0 && (
-          <fieldset>
-            <legend>Candidate OSM elements</legend>
-            {result.candidates.map((candidate) => (
-              <label className="choice" key={elementKey(candidate.node)}>
-                <input
-                  type="radio"
-                  name={`candidate-${stop.featureId}`}
-                  checked={isSelected(review, candidate.node)}
-                  onChange={() =>
-                    onAction(stop.featureId, selectionAction(candidate.node))
-                  }
-                />
-                <span>
-                  OSM {isOsmWay(candidate.node) ? "way" : "node"}{" "}
-                  {candidate.node.id}, {candidate.distanceMeters.toFixed(1)} m
-                  {candidate.exactIdentity ? " - exact identity" : ""}
-                  {candidate.expandedNameEqual ? " - expanded name" : ""}
-                </span>
-              </label>
-            ))}
-          </fieldset>
-        )}
-        {selectedElementIsOutsideCandidates &&
-          selectedElement !== undefined && (
-            <fieldset>
-              <legend>Selected on map</legend>
-              <label className="choice">
-                <input
-                  type="radio"
-                  name={`candidate-${stop.featureId}`}
-                  checked={isSelected(review, selectedElement)}
-                  onChange={() =>
-                    onAction(stop.featureId, selectionAction(selectedElement))
-                  }
-                />
-                <span>
-                  OSM {isOsmWay(selectedElement) ? "way" : "node"}{" "}
-                  {selectedElement.id},{" "}
-                  {haversineDistanceMeters(
-                    stop.latitude,
-                    stop.longitude,
-                    selectedElement.latitude,
-                    selectedElement.longitude
-                  ).toFixed(1)}{" "}
-                  m
-                </span>
-              </label>
-            </fieldset>
-          )}
-        {review !== undefined && review.proposals.length > 0 && (
-          <fieldset>
-            <legend>Tag decisions</legend>
-            {review.proposals.map((proposal) => (
-              <div className="tag-decision" key={proposal.key}>
-                <strong>{proposal.key}</strong>
-                <span>
-                  current: {proposal.currentValue ?? "(missing)"}; proposed:{" "}
-                  {proposal.proposedValue ?? "(none)"}
-                  {proposal.stale ? " - stale selected-source identity" : ""}
-                </span>
-                <div className="tag-options">
-                  {(["accept-proposed", "keep-current", "remove"] as const).map(
-                    (resolution: TagResolution) => (
-                      <label className="choice" key={resolution}>
-                        <input
-                          type="radio"
-                          name={`tag-${stop.featureId}-${proposal.key}`}
-                          value={resolution}
-                          checked={proposal.resolution === resolution}
-                          disabled={
-                            resolution === "accept-proposed" &&
-                            proposal.proposedValue === undefined
-                          }
-                          onChange={() =>
-                            onAction(stop.featureId, {
-                              type: "set-tag-resolution",
-                              key: proposal.key,
-                              resolution
-                            })
-                          }
-                        />
-                        <span>{resolution}</span>
-                      </label>
-                    )
-                  )}
-                </div>
-              </div>
-            ))}
-          </fieldset>
-        )}
         <div className="button-row">
           <button
             type="button"
@@ -538,6 +493,9 @@ export function ReviewQueue({
         <div className="review-card-status-row">
           <div className="review-card-states">
             <span className="category category-removed">removed</span>
+            {reviews.get(featureId)?.state === "skipped" && (
+              <span className="state state-skipped">reviewed unchanged</span>
+            )}
           </div>
           <button
             ref={focusedFeatureId === featureId ? focusedCardRef : undefined}
@@ -561,6 +519,17 @@ export function ReviewQueue({
             </li>
           ))}
         </ul>
+        <p>
+          No deletion is proposed. Inspect this element and leave it unchanged.
+        </p>
+        <button
+          type="button"
+          className="secondary"
+          disabled={reviews.get(featureId)?.state === "skipped"}
+          onClick={() => handleDecisionAction(featureId, { type: "skip" })}
+        >
+          Keep OSM element unchanged
+        </button>
       </li>
     );
   }
@@ -588,7 +557,7 @@ export function ReviewQueue({
             </div>
             <table className="review-diff-columns">
               <caption className="visually-hidden">
-                GTFS values on the left and OSM values on the right
+                GTFS tags on the left and OSM tags on the right
               </caption>
               <thead>
                 <tr>
@@ -597,27 +566,6 @@ export function ReviewQueue({
                 </tr>
               </thead>
               <tbody>
-                <ReviewDiffRow
-                  gtfsLabel={elementDisplayLabel(item.node)}
-                  gtfsValue="(not present)"
-                  osmLabel={elementDisplayLabel(item.node)}
-                  osmValue={String(item.node.id)}
-                  highlight="remove"
-                />
-                <ReviewDiffRow
-                  gtfsLabel="latitude"
-                  gtfsValue="(not present)"
-                  osmLabel="center latitude"
-                  osmValue={item.node.latitude.toFixed(6)}
-                  highlight="remove"
-                />
-                <ReviewDiffRow
-                  gtfsLabel="longitude"
-                  gtfsValue="(not present)"
-                  osmLabel="center longitude"
-                  osmValue={item.node.longitude.toFixed(6)}
-                  highlight="remove"
-                />
                 {item.identityTags.map((tag) => (
                   <ReviewDiffRow
                     key={tag.key}
@@ -630,12 +578,34 @@ export function ReviewQueue({
                 ))}
               </tbody>
             </table>
+            <ReviewMetadataTable
+              heading="Location metadata"
+              caption="Center coordinates for the OSM element"
+              rows={[
+                {
+                  field: "Center latitude",
+                  gtfsValue: "(not present)",
+                  osmValue: item.node.latitude.toFixed(6),
+                  highlight: "remove"
+                },
+                {
+                  field: "Center longitude",
+                  gtfsValue: "(not present)",
+                  osmValue: item.node.longitude.toFixed(6),
+                  highlight: "remove"
+                }
+              ]}
+            />
           </div>
         </article>
       );
     }
     const { stop, result, review } = item;
     const selectedElement = getSelectedOsmElement(result, review, nodes);
+    const selectedOsmRef =
+      selectedElement === undefined
+        ? undefined
+        : elementRefFor(selectedElement);
     const candidateMatch =
       selectedElement === undefined
         ? undefined
@@ -676,7 +646,7 @@ export function ReviewQueue({
       .map((key) => ({
         key,
         gtfsValue: proposedTags.get(key),
-        osmValue: osmTags[key]
+        osmValue: Object.hasOwn(osmTags, key) ? osmTags[key] : undefined
       }));
     const highlightComparedValues = (
       gtfsValue: string,
@@ -724,13 +694,27 @@ export function ReviewQueue({
           </div>
           <table className="review-diff-columns">
             <caption className="visually-hidden">
-              GTFS-mapped tags on the left and OSM tags on the right;
-              coordinates and match distance are shown as metadata
+              GTFS-mapped tags on the left and OSM tags on the right
             </caption>
             <thead>
               <tr>
                 <th scope="col">GTFS</th>
-                <th scope="col">OSM</th>
+                <th scope="col">
+                  OSM
+                  {selectedOsmRef !== undefined && (
+                    <>
+                      {" "}
+                      <a
+                        className="review-diff-osm-link"
+                        href={`https://www.openstreetmap.org/${selectedOsmRef.type}/${selectedOsmRef.id}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      >
+                        {selectedOsmRef.type} {selectedOsmRef.id}
+                      </a>
+                    </>
+                  )}
+                </th>
               </tr>
             </thead>
             <tbody>
@@ -744,41 +728,35 @@ export function ReviewQueue({
                   highlight={highlightComparedTags(key, gtfsValue, osmValue)}
                 />
               ))}
-              <ReviewDiffRow
-                gtfsLabel="stop_lat"
-                gtfsValue={gtfsLatitude}
-                osmLabel="latitude"
-                osmValue={osmLatitude ?? "(missing)"}
-                highlight={
-                  coordinatesWillChange
-                    ? highlightComparedValues(gtfsLatitude, osmLatitude)
-                    : "none"
-                }
-              />
-              <ReviewDiffRow
-                gtfsLabel="stop_lon"
-                gtfsValue={gtfsLongitude}
-                osmLabel="longitude"
-                osmValue={osmLongitude ?? "(missing)"}
-                highlight={
-                  coordinatesWillChange
-                    ? highlightComparedValues(gtfsLongitude, osmLongitude)
-                    : "none"
-                }
-              />
-              <ReviewDiffRow
-                gtfsLabel="(metadata)"
-                gtfsValue="—"
-                osmLabel="distance"
-                osmValue={
-                  distanceMeters === undefined
-                    ? "-"
-                    : `${distanceMeters.toFixed(0)} m`
-                }
-                highlight="none"
-              />
             </tbody>
           </table>
+          <ReviewMetadataTable
+            heading="Location and match metadata"
+            caption="GTFS stop and OSM element coordinates with calculated match distance"
+            rows={[
+              {
+                field: "Latitude",
+                gtfsValue: gtfsLatitude,
+                osmValue: osmLatitude ?? "(missing)",
+                highlight: coordinatesWillChange
+                  ? highlightComparedValues(gtfsLatitude, osmLatitude)
+                  : "none"
+              },
+              {
+                field: "Longitude",
+                gtfsValue: gtfsLongitude,
+                osmValue: osmLongitude ?? "(missing)",
+                highlight: coordinatesWillChange
+                  ? highlightComparedValues(gtfsLongitude, osmLongitude)
+                  : "none"
+              }
+            ]}
+            distance={
+              distanceMeters === undefined
+                ? "-"
+                : `${distanceMeters.toFixed(0)} m`
+            }
+          />
         </div>
       </article>
     );
@@ -876,9 +854,10 @@ export function ReviewQueue({
           </details>
         </div>
         <p>
-          Every feature must be explicitly matched, created, or skipped before
-          an export can be enabled. Name and distance evidence never
-          auto-selects.
+          Matched and created features can be exported as partial progress.
+          Unreviewed and skipped features are excluded. Only a unique nearby
+          exact identity can auto-select a match; name and distance alone never
+          do.
         </p>
         {!hasVisibleItems && reviewSummary}
         {hasVisibleItems && reviewSummary}

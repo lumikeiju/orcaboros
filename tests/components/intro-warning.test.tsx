@@ -84,4 +84,31 @@ describe("IntroWarning", () => {
       screen.getByRole("textbox", { name: "GTFS file input" })
     ).toHaveFocus();
   });
+
+  it("restores the previous focus after acknowledgement without a callback", () => {
+    const trigger = document.createElement("button");
+    document.body.append(trigger);
+    trigger.focus();
+    const { unmount } = render(<IntroWarning />);
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /I have read these warnings/ })
+    );
+
+    expect(trigger).toHaveFocus();
+    unmount();
+    trigger.remove();
+  });
+
+  it("does not move focus when the continue callback changes", () => {
+    const { rerender } = render(<IntroWarning onContinue={vi.fn()} />);
+    const link = screen.getByRole("link", {
+      name: "Automated Edits Code of Conduct"
+    });
+    link.focus();
+
+    rerender(<IntroWarning onContinue={vi.fn()} />);
+
+    expect(link).toHaveFocus();
+  });
 });

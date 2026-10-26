@@ -26,9 +26,20 @@ import {
 
 const maplibreState = vi.hoisted(() => ({
   calls: [] as string[],
+  autoLoad: true,
+  gpuFailure: false,
+  zoom: 12,
+  cameraOptions: [] as Array<{ essential?: boolean; duration?: number }>,
   maps: [] as Array<{
     layers: string[];
-    emitClick: (layerId: string, id: string) => void;
+    removed: boolean;
+    emitLoad: () => void;
+    emitError: (error: Error) => void;
+    emitClick: (
+      layerId: string,
+      id: string,
+      overlappingCandidateId?: string
+    ) => void;
     emitMouseMove: (longitude: number, latitude: number) => void;
   }>,
   queryFeatures: [] as Array<{
@@ -47,8 +58,11 @@ const maplibreState = vi.hoisted(() => ({
 }));
 
 vi.mock("maplibre-gl", () => {
+  class GPUInitializationError extends Error {}
+
   class MockMap {
     layers: string[] = [];
+    removed = false;
     private readonly handlers: Array<{
       event: string;
       layers: readonly string[];
@@ -61,6 +75,9 @@ vi.mock("maplibre-gl", () => {
 
     constructor() {
       maplibreState.calls.push("map");
+      if (maplibreState.gpuFailure) {
+        throw new GPUInitializationError("Graphics context creation failed");
+      }
       maplibreState.maps.push(this);
     }
 
@@ -79,12 +96,26 @@ vi.mock("maplibre-gl", () => {
         return;
       }
       this.handlers.push({ event, layers, handler });
-      if (event === "load") {
+      if (event === "load" && maplibreState.autoLoad) {
         setTimeout(() => handler({}), 0);
       }
     }
 
-    emitClick(layerId: string, id: string): void {
+    emitLoad(): void {
+      this.handlers.find((entry) => entry.event === "load")?.handler({});
+    }
+
+    emitError(error: Error): void {
+      this.handlers
+        .find((entry) => entry.event === "error")
+        ?.handler({ error });
+    }
+
+    emitClick(
+      layerId: string,
+      id: string,
+      overlappingCandidateId?: string
+    ): void {
       const listener = this.handlers.find(
         (entry) => entry.event === "click" && entry.layers.includes(layerId)
       );
@@ -92,7 +123,17 @@ vi.mock("maplibre-gl", () => {
         throw new Error(`No click listener for ${layerId}`);
       }
       listener.handler({
-        features: [{ layer: { id: layerId }, properties: { id } }],
+        features: [
+          { layer: { id: layerId }, properties: { id } },
+          ...(overlappingCandidateId === undefined
+            ? []
+            : [
+                {
+                  layer: { id: "osm-candidates" },
+                  properties: { id: overlappingCandidateId }
+                }
+              ])
+        ],
         point: { x: 200, y: 300 },
         lngLat: { lng: -122.2, lat: 48.014 }
       });
@@ -163,16 +204,30 @@ vi.mock("maplibre-gl", () => {
     }
 
     getZoom(): number {
-      return 12;
+      return maplibreState.zoom;
     }
 
-    flyTo(): void {}
+    flyTo(options: { essential?: boolean; duration?: number }): void {
+      maplibreState.cameraOptions.push(options);
+    }
 
-    fitBounds(): void {}
+    fitBounds(
+      _bounds: unknown,
+      options: { essential?: boolean; duration?: number }
+    ): void {
+      maplibreState.cameraOptions.push(options);
+    }
 
-    zoomTo(): void {}
+    zoomTo(
+      _zoom: number,
+      options: { essential?: boolean; duration?: number }
+    ): void {
+      maplibreState.cameraOptions.push(options);
+    }
 
-    remove(): void {}
+    remove(): void {
+      this.removed = true;
+    }
   }
 
   class MockPopup {
@@ -216,6 +271,7 @@ vi.mock("maplibre-gl", () => {
   return {
     Map: MockMap,
     Popup: MockPopup,
+    GPUInitializationError,
     setWorkerUrl(url: string) {
       maplibreState.calls.push("worker-url");
       maplibreState.workerUrls.push(url);
@@ -226,6 +282,10 @@ vi.mock("maplibre-gl", () => {
 afterEach(() => {
   cleanup();
   maplibreState.calls.length = 0;
+  maplibreState.autoLoad = true;
+  maplibreState.gpuFailure = false;
+  maplibreState.zoom = 12;
+  maplibreState.cameraOptions.length = 0;
   maplibreState.maps.length = 0;
   maplibreState.queryFeatures.length = 0;
   maplibreState.projectedCoordinates.clear();
@@ -301,6 +361,9 @@ describe("MapLegend", () => {
     expect(screen.getByText("Unmatched stop")).toBeVisible();
     expect(screen.getByText("OSM candidate")).toBeVisible();
     expect(screen.getByText("Reviewed")).toBeVisible();
+    expect(
+      screen.queryByText("Link another OSM element")
+    ).not.toBeInTheDocument();
 
     fireEvent.click(toggle);
 
@@ -321,6 +384,214 @@ describe("MapLegend", () => {
 });
 
 describe("MapView feature interactions", () => {
+  it("reports WebGL initialization failure and retries without an unhandled rejection", async () => {
+    maplibreState.gpuFailure = true;
+    render(<MapView nodes={[]} />);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "The map needs WebGL2"
+    );
+    expect(maplibreState.maps).toHaveLength(0);
+    maplibreState.gpuFailure = false;
+    fireEvent.click(screen.getByRole("button", { name: "Retry map" }));
+
+    await waitFor(() =>
+      expect(maplibreState.maps[0]?.layers).toContain("osm-candidates")
+    );
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("reports sanitized basemap errors, cleans up on retry and ignores late errors", async () => {
+    maplibreState.autoLoad = false;
+    render(<MapView nodes={[]} />);
+    await waitFor(() => expect(maplibreState.maps).toHaveLength(1));
+    const oldMap = maplibreState.maps[0]!;
+
+    act(() => oldMap.emitError(new Error("Private diagnostic details")));
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "The map could not be displayed completely"
+    );
+    expect(screen.getByRole("alert")).not.toHaveTextContent(
+      "Private diagnostic details"
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Retry map" }));
+    await waitFor(() => expect(maplibreState.maps).toHaveLength(2));
+    act(() => maplibreState.maps[1]!.emitLoad());
+    act(() => oldMap.emitError(new Error("Late diagnostic details")));
+
+    expect(oldMap.removed).toBe(true);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("keeps link switching on the popup and cancels pointer editing when onAction is withdrawn", async () => {
+    const node: OsmNode = {
+      id: 93,
+      version: 1,
+      latitude: 48.015,
+      longitude: -122.201,
+      tags: {}
+    };
+    const props = {
+      nodes: [node],
+      stops: [stop],
+      focusedFeatureId: stop.featureId
+    };
+    const onAction = vi.fn();
+    const { rerender } = render(<MapView {...props} />);
+    expect(
+      screen.queryByText("Link another OSM element")
+    ).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(maplibreState.maps[0]?.layers).toContain("osm-candidates")
+    );
+    const map = maplibreState.maps[0]!;
+    act(() => map.emitClick("map-marker-new", stop.featureId));
+    expect(
+      maplibreState.popups.at(-1)?.content?.querySelector("button")
+    ).toBeNull();
+
+    rerender(<MapView {...props} onAction={onAction} />);
+    expect(
+      screen.queryByText("Link another OSM element")
+    ).not.toBeInTheDocument();
+    act(() => map.emitClick("map-marker-new", stop.featureId));
+    const button = maplibreState.popups
+      .at(-1)!
+      .content!.querySelector("button")!;
+    fireEvent.click(button);
+    expect(button).toHaveAttribute("aria-pressed", "true");
+
+    rerender(<MapView {...props} />);
+    expect(
+      screen.queryByText("Link another OSM element")
+    ).not.toBeInTheDocument();
+    expect(button).toHaveAttribute("aria-pressed", "false");
+    expect(maplibreState.sourceData.get("map-link-preview")).toMatchObject({
+      features: []
+    });
+    fireEvent.click(button);
+    expect(button).toHaveTextContent("Change Link");
+    act(() => map.emitClick("osm-candidates", elementKey(node)));
+    expect(onAction).not.toHaveBeenCalled();
+  });
+
+  it("exposes map controls within a named region instead of an opaque image", async () => {
+    const { unmount } = render(<MapView nodes={[]} />);
+    expect(
+      screen.getByRole("region", { name: "OpenStreetMap candidate map" })
+    ).toBeInTheDocument();
+    unmount();
+    await act(async () => {});
+    expect(maplibreState.maps).toHaveLength(0);
+  });
+
+  it("removes an unloaded map and ignores its late load event", async () => {
+    maplibreState.autoLoad = false;
+    const { unmount } = render(<MapView nodes={[]} />);
+    await waitFor(() => expect(maplibreState.maps).toHaveLength(1));
+    const map = maplibreState.maps[0]!;
+
+    unmount();
+    act(() => map.emitLoad());
+
+    expect(map.removed).toBe(true);
+    expect(map.layers).toEqual([]);
+  });
+
+  it("uses the newest data when a map finishes loading asynchronously", async () => {
+    maplibreState.autoLoad = false;
+    const nodes: readonly OsmNode[] = [];
+    const { rerender } = render(<MapView nodes={nodes} />);
+    await waitFor(() => expect(maplibreState.maps).toHaveLength(1));
+    rerender(
+      <MapView nodes={nodes} stops={[stop]} focusedFeatureId={stop.featureId} />
+    );
+
+    act(() => maplibreState.maps[0]!.emitLoad());
+
+    expect(maplibreState.sourceData.get("map-markers")).toMatchObject({
+      features: [{ properties: { id: stop.featureId, highlight: "primary" } }]
+    });
+  });
+
+  it("allows reduced-motion preferences for all automatic and button camera moves", async () => {
+    maplibreState.zoom = 1;
+    const nodes: readonly OsmNode[] = [];
+    const secondStop = { ...stop, featureId: "other", longitude: -122.3 };
+    const { rerender } = render(
+      <MapView nodes={nodes} stops={[stop, secondStop]} />
+    );
+    await waitFor(() =>
+      expect(maplibreState.maps[0]?.layers).toContain("osm-candidates")
+    );
+    expect(maplibreState.cameraOptions).toHaveLength(1);
+
+    const stops = [stop];
+    rerender(<MapView nodes={nodes} stops={stops} />);
+    expect(maplibreState.cameraOptions).toHaveLength(2);
+    rerender(
+      <MapView nodes={nodes} stops={stops} focusedFeatureId={stop.featureId} />
+    );
+    expect(maplibreState.cameraOptions).toHaveLength(3);
+    fireEvent.click(
+      screen.getByRole("button", { name: "Zoom map in to view data" })
+    );
+    expect(maplibreState.cameraOptions).toHaveLength(4);
+    for (const options of maplibreState.cameraOptions) {
+      expect(options.essential).not.toBe(true);
+    }
+  });
+
+  it("cancels manual link mode and removes the old popup when the basemap changes", async () => {
+    const node: OsmNode = {
+      id: 80,
+      version: 1,
+      latitude: 48.015,
+      longitude: -122.201,
+      tags: {}
+    };
+    const nodes = [node];
+    const stops = [stop];
+    const matches = new Map<string, InitialMatch>([
+      [stop.featureId, { kind: "review", candidates: [candidateFor(node)] }]
+    ]);
+    const onAction = vi.fn();
+    const props = { nodes, stops, matches, onAction };
+    const { rerender, unmount } = render(<MapView {...props} />);
+    await waitFor(() =>
+      expect(maplibreState.maps[0]?.layers).toContain("osm-candidates")
+    );
+    const oldMap = maplibreState.maps[0]!;
+    act(() => oldMap.emitClick("map-marker-matched", stop.featureId));
+    const oldPopup = maplibreState.popups.at(-1)!;
+    const changeLinkButton = oldPopup.content!.querySelector(
+      ".map-feature-popup-change-link"
+    )!;
+    fireEvent.click(changeLinkButton);
+    expect(changeLinkButton).toHaveAttribute("aria-pressed", "true");
+
+    rerender(<MapView {...props} theme="light" />);
+    await waitFor(() =>
+      expect(maplibreState.maps[1]?.layers).toContain("osm-candidates")
+    );
+    expect(oldMap.removed).toBe(true);
+    expect(oldPopup.removed).toBe(true);
+    expect(maplibreState.sourceData.get("map-link-preview")).toMatchObject({
+      features: []
+    });
+    expect(maplibreState.sourceData.get("map-all-connections")).toMatchObject({
+      features: [{ properties: { changingLink: false } }]
+    });
+    act(() =>
+      maplibreState.maps[1]!.emitClick("osm-candidates", elementKey(node))
+    );
+    expect(onAction).not.toHaveBeenCalled();
+    const currentPopup = maplibreState.popups.at(-1)!;
+    unmount();
+    expect(currentPopup.removed).toBe(true);
+    expect(maplibreState.maps[1]!.removed).toBe(true);
+  });
+
   it("sets the bundled worker URL before creating the map", async () => {
     render(<MapView nodes={[]} />);
 
@@ -755,7 +1026,7 @@ describe("MapView feature interactions", () => {
     expect(maplibreState.popups[0]?.removed).toBe(true);
   });
 
-  it("previews and applies a link change only after an OSM element is clicked", async () => {
+  it("previews and applies a link change to an OSM element even when a GTFS marker overlaps it", async () => {
     const original: OsmNode = {
       id: 58,
       version: 1,
@@ -946,7 +1217,9 @@ describe("MapView feature interactions", () => {
 
     act(() => fireEvent.click(changeLinkButton));
     act(() => map.emitMouseMove(-122.195, 48.02));
-    act(() => map.emitClick("osm-candidates", elementKey(target)));
+    act(() =>
+      map.emitClick("map-marker-matched", stop.featureId, elementKey(target))
+    );
     expect(onAction).toHaveBeenCalledWith(stop.featureId, {
       type: "select-element",
       element: { type: "node", id: target.id }

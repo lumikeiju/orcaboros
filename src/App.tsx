@@ -23,7 +23,8 @@ import {
   createCustomProfileForFeedIds,
   fingerprintProfile,
   getDefaultProfile,
-  getProfileForFeedIds
+  getProfileForFeedIds,
+  serializeProfile
 } from "./profiles";
 import { evaluateRemovalKeys, MappingProfile } from "./domain/profile";
 import {
@@ -40,8 +41,6 @@ import {
   firstUndecidedFeatureId,
   computePostChangeTags,
   legacyIdentityKeys,
-  removeTags,
-  refreshTagProposals,
   selectedElementRef,
   staleIdentityKeys
 } from "./domain/review";
@@ -79,7 +78,11 @@ import {
   createDefaultOsmFileName,
   downloadTextFile
 } from "./infrastructure/browser/download";
-import { serializeJosmOsm } from "./infrastructure/osm/change-export";
+import {
+  ExportValidationError,
+  serializeJosmOsm,
+  type ExportValidationIssue
+} from "./infrastructure/osm/change-export";
 import {
   CONSOLIDATED_SOURCE_FEED_ID,
   DEFAULT_GEOMETRY_TARGET,
@@ -92,6 +95,7 @@ import {
   IndexedDbSessionRepository,
   MemorySessionRepository,
   SessionRepository,
+  StoredSession,
   buildStagedSession,
   stageAndActivateSession
 } from "./storage";
@@ -120,6 +124,10 @@ type WorkflowStepStatus = {
   label: string;
   kind: WorkflowStepStatusKind;
 };
+type ExportErrorState = {
+  message: string;
+  issues: readonly ExportValidationIssue[];
+};
 
 const MIN_RAIL_WIDTH = 18;
 const MAX_RAIL_WIDTH = 36;
@@ -139,7 +147,7 @@ function formatBytes(bytes: number): string {
   return `${rounded} ${units[unitIndex]}`;
 }
 
-function applyProfileStreetNameCleanup(
+function applyProfileToStop(
   profile: MappingProfile,
   stop: EligibleStop
 ): EligibleStop {
@@ -147,27 +155,13 @@ function applyProfileStreetNameCleanup(
     (candidate) => candidate.id === stop.sourceFeedId
   );
   return applyStreetNameCleanup(
-    stop,
+    {
+      ...stop,
+      sourceFeedName: sourceFeed?.displayName ?? stop.sourceFeedName,
+      sourceFeedMetadata: sourceFeed?.metadata ?? {}
+    },
     sourceFeed?.streetNameCleanup ?? DEFAULT_STREET_NAME_CLEANUP
   );
-}
-
-function outputMapping(
-  profile: MappingProfile,
-  stop: EligibleStop
-): {
-  tags: ReturnType<typeof mapStopToOsmTags>;
-  forceAcceptKeys: readonly string[];
-} {
-  const tags = mapStopToOsmTags(profile, stop);
-  return {
-    tags,
-    forceAcceptKeys:
-      tags.name === stop.stopNameExpanded &&
-      stop.stopNameExpanded !== stop.stopName
-        ? ["name"]
-        : []
-  };
 }
 
 export function App(): ReactElement {
@@ -175,6 +169,9 @@ export function App(): ReactElement {
   const [profile, setProfile] = useState<MappingProfile>(getDefaultProfile());
   const [autoMatchedStockProfile, setAutoMatchedStockProfile] = useState(false);
   const [archives, setArchives] = useState<readonly SelectedArchive[]>([]);
+  const [archiveProfile, setArchiveProfile] = useState<MappingProfile>();
+  const [archiveProfileAutoMatched, setArchiveProfileAutoMatched] =
+    useState(false);
   const [selectionErrors, setSelectionErrors] = useState<readonly string[]>([]);
   const [stops, setStops] = useState<readonly EligibleStop[]>([]);
   const [feedSummaries, setFeedSummaries] = useState<
@@ -203,7 +200,13 @@ export function App(): ReactElement {
   const [styleUrl, setStyleUrl] = useState("");
   const [status, setStatus] = useState("Upload GTFS ZIPs to begin.");
   const [error, setError] = useState<string | undefined>();
-  const [exportError, setExportError] = useState<string | undefined>();
+  const [exportError, setExportError] = useState<ExportErrorState>();
+  const exportErrorFeatureIds =
+    exportError === undefined
+      ? []
+      : Array.from(
+          new Set(exportError.issues.flatMap((issue) => issue.featureIds))
+        );
   const [loading, setLoading] = useState(false);
   const [resetConfirmationOpen, setResetConfirmationOpen] = useState(false);
   const resetSessionButtonRef = useRef<HTMLButtonElement>(null);
@@ -217,6 +220,10 @@ export function App(): ReactElement {
     useState<OsmRequestResultState>();
   const osmAbortController = useRef<AbortController | null>(null);
   const matchingProgressThrottle = useRef(createProgressThrottleState());
+  const sessionGeneration = useRef(0);
+  const activeSessionId = useRef<string | undefined>(undefined);
+  const activeSnapshotId = useRef<string | undefined>(undefined);
+  const pendingSessionWrite = useRef<Promise<void>>(Promise.resolve());
   const repository = useMemo<SessionRepository>(
     () =>
       typeof indexedDB === "undefined"
@@ -225,10 +232,42 @@ export function App(): ReactElement {
     []
   );
 
-  const enabledDefinitions = useMemo(
-    () => profile.sourceFeeds.filter((source) => source.enabled),
-    [profile.sourceFeeds]
-  );
+  function updateStoredSession(
+    update: (session: StoredSession) => StoredSession | Promise<StoredSession>,
+    allowMissing = false
+  ): Promise<void> {
+    const expectedSessionId = activeSessionId.current;
+    const operation = async (): Promise<void> => {
+      const session = await repository.getActiveSession();
+      if (session === undefined) {
+        if (allowMissing) {
+          return;
+        }
+        throw new Error("The active GTFS session is no longer available.");
+      }
+      if (
+        expectedSessionId !== undefined &&
+        session.manifest.sessionId !== expectedSessionId
+      ) {
+        throw new Error(
+          "The active session changed in another tab. Reload before continuing."
+        );
+      }
+      await repository.putActiveSession(await update(session));
+    };
+    const write = pendingSessionWrite.current.then(operation);
+    pendingSessionWrite.current = write.then(
+      () => undefined,
+      (caught: unknown) => {
+        setError(
+          caught instanceof Error
+            ? caught.message
+            : "The session could not be saved."
+        );
+      }
+    );
+    return write;
+  }
   const availableFields = useMemo(
     () => [...new Set(feedSummaries.flatMap((summary) => summary.fields))],
     [feedSummaries]
@@ -256,10 +295,16 @@ export function App(): ReactElement {
 
   useEffect(() => {
     let active = true;
+    const controller = new AbortController();
+    const generation = sessionGeneration.current;
     void repository
       .getActiveSession()
-      .then((session) => {
-        if (!active || session === undefined) {
+      .then(async (session) => {
+        if (
+          !active ||
+          session === undefined ||
+          generation !== sessionGeneration.current
+        ) {
           return;
         }
         const restoredProfile: MappingProfile = {
@@ -272,12 +317,32 @@ export function App(): ReactElement {
               sourceFeed.streetNameCleanup ?? DEFAULT_STREET_NAME_CLEANUP
           }))
         };
-        setProfile(restoredProfile);
         const remapStop = (stop: EligibleStop): EligibleStop =>
-          applyProfileStreetNameCleanup(restoredProfile, stop);
+          applyProfileToStop(restoredProfile, stop);
         const restoredStops = session.sourceFeeds.flatMap((source) =>
           source.eligibleStops.map(remapStop)
         );
+        restoredStops.forEach((stop) =>
+          mapStopToOsmTags(restoredProfile, stop)
+        );
+        const restoredMatches =
+          session.osmSnapshot === undefined
+            ? new Map<string, InitialMatch>()
+            : await matchStopsInWorker(
+                restoredStops,
+                session.osmSnapshot.nodes,
+                restoredProfile.candidateRadiusMeters,
+                restoredProfile.autoIdRadiusMeters,
+                undefined,
+                controller.signal
+              );
+        if (!active || generation !== sessionGeneration.current) {
+          return;
+        }
+        activeSessionId.current = session.manifest.sessionId;
+        activeSnapshotId.current = session.osmSnapshot?.snapshotId;
+        setProfile(restoredProfile);
+        setMatches(restoredMatches);
         setStops(restoredStops);
         setFeedSummaries(
           session.sourceFeeds.map((source) => ({
@@ -330,14 +395,27 @@ export function App(): ReactElement {
       });
     return () => {
       active = false;
+      controller.abort();
     };
   }, [repository]);
+
+  useEffect(
+    () => () => {
+      activeImportHandle.current?.cancel();
+      osmAbortController.current?.abort();
+    },
+    []
+  );
 
   async function importSelectedArchives(): Promise<void> {
     if (archives.length === 0 || selectionErrors.length > 0) {
       setError("Select at least one enabled ZIP archive before importing.");
       return;
     }
+    const importProfile = archiveProfile ?? profile;
+    const enabledDefinitions = importProfile.sourceFeeds.filter(
+      (source) => source.enabled
+    );
     const importableArchives = archives.filter((archive) =>
       enabledDefinitions.some(
         (definition) =>
@@ -350,6 +428,7 @@ export function App(): ReactElement {
       return;
     }
     const skippedArchiveCount = archives.length - importableArchives.length;
+    sessionGeneration.current += 1;
     setLoading(true);
     setError(undefined);
     setOsmRequestResult(undefined);
@@ -416,11 +495,18 @@ export function App(): ReactElement {
       }
       const stagedSession = await buildStagedSession(
         crypto.randomUUID(),
-        profile,
+        importProfile,
         imported
       );
-      await stageAndActivateSession(repository, stagedSession);
       const nextStops = imported.flatMap((item) => item.result.eligibleStops);
+      nextStops.forEach((stop) => mapStopToOsmTags(importProfile, stop));
+      await pendingSessionWrite.current;
+      await stageAndActivateSession(repository, stagedSession);
+      activeSessionId.current = stagedSession.manifest.sessionId;
+      activeSnapshotId.current = undefined;
+      setProfile(importProfile);
+      setAutoMatchedStockProfile(archiveProfileAutoMatched);
+      setArchiveProfile(undefined);
       setProfileReviewed(false);
       setStops(nextStops);
       setFeedSummaries(imported.map((item) => item.result));
@@ -472,12 +558,10 @@ export function App(): ReactElement {
     nextArchives: readonly SelectedArchive[],
     errors: readonly string[]
   ): void {
-    setAutoMatchedStockProfile(false);
-    setProfileReviewed(false);
-    setRetrievalComplete(false);
     setArchives(nextArchives);
+    setArchiveProfile(undefined);
+    setArchiveProfileAutoMatched(false);
     setSelectionErrors(errors);
-    setFeedSummaries([]);
     setOsmRequestResult(undefined);
     setError(errors.length > 0 ? errors.join("; ") : undefined);
     if (errors.length === 0 && nextArchives.length > 0) {
@@ -490,10 +574,10 @@ export function App(): ReactElement {
       if (selectableFeedIds.length > 0) {
         try {
           const matchedProfile = getProfileForFeedIds(selectableFeedIds);
-          void handleProfileChange(
-            matchedProfile ?? createCustomProfileForFeedIds(selectableFeedIds),
-            matchedProfile !== undefined
+          setArchiveProfile(
+            matchedProfile ?? createCustomProfileForFeedIds(selectableFeedIds)
           );
+          setArchiveProfileAutoMatched(matchedProfile !== undefined);
         } catch (caught: unknown) {
           const message =
             caught instanceof Error
@@ -511,6 +595,7 @@ export function App(): ReactElement {
       setError("Import eligible stops before retrieving OSM candidates.");
       return;
     }
+    const previousRetrievalComplete = retrievalComplete;
     setRetrievalComplete(false);
     setLoading(true);
     setError(undefined);
@@ -556,32 +641,8 @@ export function App(): ReactElement {
               requestCount: requests.length
             }
       );
-      const activeSession = await repository.getActiveSession();
-      if (activeSession === undefined) {
-        throw new Error("The active GTFS session is no longer available");
-      }
       const snapshotId = crypto.randomUUID();
       const snapshotTimestamp = new Date().toISOString();
-      await repository.putActiveSession({
-        ...activeSession,
-        osmSnapshot: {
-          snapshotId,
-          timestamp: snapshotTimestamp,
-          bounds,
-          nodes: retrieved
-        },
-        reviews: undefined,
-        draft: undefined,
-        manifest: {
-          ...activeSession.manifest,
-          osmSnapshotId: snapshotId,
-          osmSnapshotTimestamp: snapshotTimestamp,
-          osmSnapshotBounds: bounds,
-          reviewStateVersion: activeSession.manifest.reviewStateVersion + 1,
-          draftVersion: activeSession.manifest.draftVersion + 1
-        }
-      });
-      setNodes(retrieved);
       setOsmProgress({ phase: "matching", processed: 0, total: stops.length });
       matchingProgressThrottle.current = createProgressThrottleState();
       const initial = await matchStopsInWorker(
@@ -601,9 +662,9 @@ export function App(): ReactElement {
           }
           setStatus(`Matching OSM candidates (${processed}/${total})`);
           setOsmProgress({ phase: "matching", processed, total });
-        }
+        },
+        controller.signal
       );
-      setMatches(initial);
       const initialReviews = new Map(
         stops.map((stop) => {
           const result = initial.get(stop.featureId);
@@ -644,8 +705,43 @@ export function App(): ReactElement {
           ];
         })
       );
+      controller.signal.throwIfAborted();
+      const profileFingerprint = await fingerprintProfile(profile);
+      await updateStoredSession((activeSession) => {
+        controller.signal.throwIfAborted();
+        return {
+          ...activeSession,
+          profile,
+          sourceFeeds: activeSession.sourceFeeds.map((sourceFeed) => ({
+            ...sourceFeed,
+            eligibleStops: sourceFeed.eligibleStops.map((stop) =>
+              applyProfileToStop(profile, stop)
+            )
+          })),
+          osmSnapshot: {
+            snapshotId,
+            timestamp: snapshotTimestamp,
+            bounds,
+            nodes: retrieved
+          },
+          reviews: [...initialReviews.values()],
+          draft: undefined,
+          manifest: {
+            ...activeSession.manifest,
+            mappingProfileSchemaVersion: profile.schemaVersion,
+            mappingProfileFingerprint: profileFingerprint,
+            osmSnapshotId: snapshotId,
+            osmSnapshotTimestamp: snapshotTimestamp,
+            osmSnapshotBounds: bounds,
+            reviewStateVersion: activeSession.manifest.reviewStateVersion + 1,
+            draftVersion: activeSession.manifest.draftVersion + 1
+          }
+        };
+      });
+      activeSnapshotId.current = snapshotId;
+      setNodes(retrieved);
+      setMatches(initial);
       setReviews(initialReviews);
-      await persistReviews(initialReviews);
       setRetrievalComplete(true);
       setStatus(
         retrieved.length === 0
@@ -653,21 +749,20 @@ export function App(): ReactElement {
           : `Retrieved ${retrieved.length} OSM candidate elements for review.`
       );
     } catch (caught: unknown) {
+      setRetrievalComplete(previousRetrievalComplete);
+      const cancelled =
+        (caught instanceof OverpassRequestError &&
+          caught.category === "cancelled") ||
+        (caught instanceof DOMException && caught.name === "AbortError");
       const message =
         caught instanceof Error
           ? caught.message
           : "The OSM candidate request failed.";
       setOsmRequestResult(
-        caught instanceof OverpassRequestError &&
-          caught.category === "cancelled"
-          ? { kind: "cancelled" }
-          : { kind: "failed", message }
+        cancelled ? { kind: "cancelled" } : { kind: "failed", message }
       );
       setStatus(
-        caught instanceof OverpassRequestError &&
-          caught.category === "cancelled"
-          ? "Overpass request cancelled."
-          : "Overpass request failed."
+        cancelled ? "Overpass request cancelled." : "Overpass request failed."
       );
     } finally {
       setLoading(false);
@@ -681,7 +776,21 @@ export function App(): ReactElement {
     featureId: string,
     action: Parameters<typeof applyReviewAction>[1]
   ): void {
-    const current = reviews.get(featureId);
+    const current =
+      reviews.get(featureId) ??
+      (action.type === "skip" &&
+      nodes.some(
+        (node) =>
+          `removed-${isOsmWay(node) ? elementKey(node) : node.id}` === featureId
+      )
+        ? {
+            featureId,
+            state: "unreviewed" as const,
+            selectedNodeId: undefined,
+            createCoordinates: undefined,
+            proposals: []
+          }
+        : undefined);
     if (current === undefined) {
       return;
     }
@@ -734,35 +843,37 @@ export function App(): ReactElement {
     }
     const nextReviews = new Map(reviews).set(featureId, updated);
     setReviews(nextReviews);
-    void persistReviews(nextReviews);
-  }
-
-  async function persistReviews(
-    nextReviews: ReadonlyMap<string, FeatureReview>
-  ): Promise<void> {
-    try {
-      const activeSession = await repository.getActiveSession();
-      if (
-        activeSession === undefined ||
-        activeSession.osmSnapshot === undefined
-      ) {
-        return;
-      }
-      await repository.putActiveSession({
-        ...activeSession,
-        reviews: [...nextReviews.values()],
-        draft: undefined
-      });
-    } catch (caught: unknown) {
+    void persistReviews(nextReviews).catch((caught: unknown) => {
       setError(
         caught instanceof Error
           ? caught.message
           : "The review decision could not be saved."
       );
-    }
+    });
   }
 
-  function createDraft(): ChangeDraft {
+  async function persistReviews(
+    nextReviews: ReadonlyMap<string, FeatureReview>
+  ): Promise<void> {
+    const snapshotId = activeSnapshotId.current;
+    await updateStoredSession((activeSession) => {
+      if (
+        snapshotId === undefined ||
+        activeSession.osmSnapshot?.snapshotId !== snapshotId
+      ) {
+        throw new Error(
+          "The OSM snapshot changed. Retrieve candidates again before saving decisions."
+        );
+      }
+      return {
+        ...activeSession,
+        reviews: [...nextReviews.values()],
+        draft: undefined
+      };
+    });
+  }
+
+  function createDraft(sessionId: string, snapshotId: string): ChangeDraft {
     const claimIssues = validateSelectedClaims(
       stops.flatMap((stop) => {
         const review = reviews.get(stop.featureId);
@@ -782,6 +893,7 @@ export function App(): ReactElement {
     const elementByKey = new Map(nodes.map((node) => [elementKey(node), node]));
     const creates: DraftCreate[] = [];
     const modifications = new Map<string, DraftModify>();
+    const tagDecisions = new Map<string, Map<string, string | undefined>>();
     for (const stop of stops) {
       const review = reviews.get(stop.featureId);
       if (
@@ -795,21 +907,12 @@ export function App(): ReactElement {
         if (review.createCoordinates === undefined) {
           throw new Error(`${stop.featureId} has no create coordinates`);
         }
-        const mapping = outputMapping(profile, stop);
-        const proposals = refreshTagProposals(
-          review.proposals,
-          undefined,
-          mapping.tags,
-          [],
-          [],
-          mapping.forceAcceptKeys
-        );
         creates.push({
           feature: stop,
           state: "create-selected",
           latitude: review.createCoordinates.latitude,
           longitude: review.createCoordinates.longitude,
-          tags: computePostChangeTags({}, proposals)
+          tags: computePostChangeTags({}, review.proposals)
         });
         continue;
       }
@@ -843,81 +946,111 @@ export function App(): ReactElement {
           `${element.id} has conflicting geometry targets for selected features`
         );
       }
-      const staleKeys = staleIdentityKeys(
-        element,
-        [...new Set(stops.map((candidate) => candidate.sourceFeedId))],
-        validStopIds
-      );
-      const legacyRemoveKeys = legacyIdentityKeys(element, stop);
-      const removeKeys = [
-        ...new Set([...legacyRemoveKeys, ...evaluateRemovalKeys(profile, stop)])
-      ];
-      const mapping = outputMapping(profile, stop);
-      const proposals = refreshTagProposals(
-        review.proposals,
-        element,
-        mapping.tags,
-        staleKeys,
-        removeKeys,
-        mapping.forceAcceptKeys
-      );
-      const tags = removeTags(
-        computePostChangeTags(existing?.tags ?? element.tags, proposals),
-        legacyRemoveKeys
-      );
+      const ownTags = computePostChangeTags(element.tags, review.proposals);
+      const decisions =
+        tagDecisions.get(elementKey(element)) ??
+        new Map<string, string | undefined>();
+      const tags = new Map(Object.entries(existing?.tags ?? element.tags));
+      for (const proposal of review.proposals) {
+        const value = Object.hasOwn(ownTags, proposal.key)
+          ? ownTags[proposal.key]
+          : undefined;
+        if (
+          decisions.has(proposal.key) &&
+          decisions.get(proposal.key) !== value
+        ) {
+          throw new Error(
+            `${elementKey(element)} has conflicting tag decisions for ${proposal.key} across selected features`
+          );
+        }
+        decisions.set(proposal.key, value);
+        if (value === undefined) {
+          tags.delete(proposal.key);
+        } else {
+          tags.set(proposal.key, value);
+        }
+      }
+      tagDecisions.set(elementKey(element), decisions);
       modifications.set(elementKey(element), {
         node: element,
         coordinates,
         featureIds: [...(existing?.featureIds ?? []), stop.featureId],
-        tags
+        tags: Object.fromEntries(tags)
       });
     }
     return {
-      sessionId: "browser-session",
-      snapshotId: "current-snapshot",
+      sessionId,
+      snapshotId,
       creates,
       modifications: [...modifications.values()]
     };
   }
 
   async function exportDraft(): Promise<void> {
+    setLoading(true);
     setExportError(undefined);
     try {
-      const draft = createDraft();
-      const xml = serializeJosmOsm(draft);
-      const activeSessionPromise = repository.getActiveSession();
-      downloadTextFile(xml, createDefaultOsmFileName(), "application/xml");
-      const activeSession = await activeSessionPromise;
-      if (activeSession === undefined) {
-        throw new Error("The active GTFS session is no longer available");
-      }
-      await repository.putActiveSession({
-        ...activeSession,
-        reviews: [...reviews.values()],
-        draft
+      let xml = "";
+      await updateStoredSession((activeSession) => {
+        const snapshotId = activeSnapshotId.current;
+        if (
+          snapshotId === undefined ||
+          activeSession.osmSnapshot?.snapshotId !== snapshotId
+        ) {
+          throw new Error(
+            "The OSM snapshot changed. Retrieve candidates again before exporting."
+          );
+        }
+        const draft = createDraft(activeSession.manifest.sessionId, snapshotId);
+        xml = serializeJosmOsm(draft);
+        return {
+          ...activeSession,
+          reviews: [...reviews.values()],
+          draft
+        };
       });
+      downloadTextFile(xml, createDefaultOsmFileName(), "application/xml");
       setStatus(
         "Downloaded the JOSM OSM file. Open it in JOSM for final review."
       );
       setError(undefined);
     } catch (caught: unknown) {
-      const message =
-        caught instanceof Error
-          ? caught.message
-          : "The OSM Change export is invalid.";
-      setExportError(message);
+      if (caught instanceof ExportValidationError) {
+        setError(undefined);
+        const issueCount = caught.issues.length;
+        setExportError({
+          message: `OSM Change export is invalid (${issueCount} issue${issueCount === 1 ? "" : "s"}). Review the details below.`,
+          issues: caught.issues
+        });
+      } else {
+        setExportError({
+          message:
+            caught instanceof Error
+              ? caught.message
+              : "The OSM Change export is invalid.",
+          issues: []
+        });
+      }
       setStatus("OSM Change export failed.");
+    } finally {
+      setLoading(false);
     }
   }
 
   async function resetSession(): Promise<boolean> {
     setLoading(true);
     try {
+      sessionGeneration.current += 1;
       activeImportHandle.current?.cancel();
+      osmAbortController.current?.abort();
+      await pendingSessionWrite.current;
       await repository.resetActiveSession();
+      activeSessionId.current = undefined;
+      activeSnapshotId.current = undefined;
       setProfileReviewed(false);
       setAutoMatchedStockProfile(false);
       setArchives([]);
+      setArchiveProfile(undefined);
       setSelectionErrors([]);
       setStops([]);
       setFeedSummaries([]);
@@ -967,12 +1100,37 @@ export function App(): ReactElement {
     nextProfile: MappingProfile,
     isAutoMatchedStockProfile = false
   ): Promise<void> {
+    const remapStop = (stop: EligibleStop): EligibleStop =>
+      applyProfileToStop(nextProfile, stop);
+    const nextStops = stops.map(remapStop);
+    try {
+      serializeProfile(nextProfile);
+      if (
+        feedSummaries.some(
+          (summary) =>
+            !nextProfile.sourceFeeds.some(
+              (sourceFeed) =>
+                sourceFeed.enabled && sourceFeed.id === summary.sourceFeedId
+            )
+        )
+      ) {
+        throw new Error("The profile must enable every imported source feed.");
+      }
+      nextStops.forEach((stop) => mapStopToOsmTags(nextProfile, stop));
+    } catch (caught: unknown) {
+      setError(
+        caught instanceof Error
+          ? caught.message
+          : "The profile produces invalid OSM tags."
+      );
+      return;
+    }
+    sessionGeneration.current += 1;
+    activeSnapshotId.current = undefined;
+    setError(undefined);
     setProfileReviewed(false);
     setAutoMatchedStockProfile(isAutoMatchedStockProfile);
     setProfile(nextProfile);
-    const remapStop = (stop: EligibleStop): EligibleStop =>
-      applyProfileStreetNameCleanup(nextProfile, stop);
-    const nextStops = stops.map(remapStop);
     setStops(nextStops);
     setFeedSummaries((currentSummaries) =>
       currentSummaries.map((summary) => ({
@@ -987,10 +1145,9 @@ export function App(): ReactElement {
     setReviews(new Map());
     setFocusedFeatureId(undefined);
     try {
-      const activeSession = await repository.getActiveSession();
-      if (activeSession !== undefined) {
+      await updateStoredSession(async (activeSession) => {
         const profileFingerprint = await fingerprintProfile(nextProfile);
-        await repository.putActiveSession({
+        return {
           ...activeSession,
           profile: nextProfile,
           sourceFeeds: activeSession.sourceFeeds.map((sourceFeed) => ({
@@ -1010,8 +1167,8 @@ export function App(): ReactElement {
             reviewStateVersion: activeSession.manifest.reviewStateVersion + 1,
             draftVersion: activeSession.manifest.draftVersion + 1
           }
-        });
-      }
+        };
+      }, true);
     } catch (caught: unknown) {
       setError(
         caught instanceof Error
@@ -1028,7 +1185,8 @@ export function App(): ReactElement {
       review.state === "create-selected"
   ).length;
 
-  const exportBlocked = !retrievalComplete || exportableDecisionCount === 0;
+  const exportBlocked =
+    loading || !retrievalComplete || exportableDecisionCount === 0;
 
   const currentWorkflowStep = openWorkflowStep ?? "upload";
   const workflowSteps: readonly {
@@ -1069,9 +1227,10 @@ export function App(): ReactElement {
     }
   ] as const;
 
-  const decidedReviewCount = [...reviews.values()].filter(
-    (review) => review.state !== "unreviewed"
-  ).length;
+  const decidedReviewCount = stops.filter((stop) => {
+    const state = reviews.get(stop.featureId)?.state;
+    return state !== undefined && state !== "unreviewed";
+  }).length;
 
   const conflationProgress = computeConflationProgress({
     stops,
@@ -1139,15 +1298,17 @@ export function App(): ReactElement {
     navigateToWorkflowStep("retrieve");
   }
 
-  function openReviewQueue(): void {
-    const firstFeatureId =
+  function openReviewQueue(targetFeatureId?: string): void {
+    const featureId =
+      targetFeatureId ??
       firstUndecidedFeatureId({
         stops,
         nodes,
         reviews,
         validStopIds
-      }) ?? stops[0]?.featureId;
-    setFocusedFeatureId(firstFeatureId);
+      }) ??
+      stops[0]?.featureId;
+    setFocusedFeatureId(featureId);
     setReviewQueueFocusRequest((request) => request + 1);
     setOpenWorkflowStep("review");
     document
@@ -1169,6 +1330,7 @@ export function App(): ReactElement {
               definitions={STOCK_SOURCE_FEED_DEFINITIONS}
               selected={archives}
               allowUnknown
+              disabled={loading}
               onSelected={handleArchiveSelection}
             />
             {selectionErrors.length > 0 && (
@@ -1263,11 +1425,6 @@ export function App(): ReactElement {
                   </button>
                 </div>
               </div>
-              {error !== undefined && (
-                <p className="error" role="alert">
-                  {error}
-                </p>
-              )}
               {feedSummaries.length > 0 && (
                 <div
                   className="diagnostics glass-pane glass-pane--level-3 glass-pane--compact"
@@ -1317,6 +1474,7 @@ export function App(): ReactElement {
           >
             <ProfileEditor
               profile={profile}
+              disabled={loading}
               autoMatchedStockProfile={autoMatchedStockProfile}
               availableFields={availableFields}
               availableFieldsByFeed={
@@ -1388,6 +1546,7 @@ export function App(): ReactElement {
                     id="overpass-endpoint"
                     type="password"
                     autoComplete="off"
+                    disabled={loading}
                     value={endpoint}
                     onChange={(event) => setEndpoint(event.target.value)}
                     placeholder="https://your-overpass.example/api/interpreter"
@@ -1398,6 +1557,7 @@ export function App(): ReactElement {
                   <input
                     type="url"
                     autoComplete="off"
+                    disabled={loading}
                     value={styleUrl}
                     onChange={(event) => setStyleUrl(event.target.value)}
                     placeholder="Leave blank for Fiord dark / Positron light"
@@ -1444,7 +1604,7 @@ export function App(): ReactElement {
                     <button
                       type="button"
                       className="workflow-next-step glass-button--accent"
-                      onClick={openReviewQueue}
+                      onClick={() => openReviewQueue()}
                     >
                       Continue to review
                     </button>
@@ -1483,7 +1643,7 @@ export function App(): ReactElement {
                 <button
                   type="button"
                   className="workflow-next-step glass-button--accent"
-                  onClick={openReviewQueue}
+                  onClick={() => openReviewQueue()}
                 >
                   Open Review Queue
                 </button>
@@ -1528,9 +1688,59 @@ export function App(): ReactElement {
                   Download JOSM OSM File
                 </button>
                 {exportError !== undefined && (
-                  <p className="error" role="alert">
-                    {exportError}
-                  </p>
+                  <>
+                    <p className="error" role="alert">
+                      {exportError.message}
+                    </p>
+                    {exportError.issues.length > 0 && (
+                      <div className="export-error-details">
+                        <ul className="export-error-issues">
+                          {exportError.issues.map((issue, index) => (
+                            <li key={`${issue.message}-${index}`}>
+                              {issue.message}
+                            </li>
+                          ))}
+                        </ul>
+                        {exportErrorFeatureIds.length > 0 && (
+                          <>
+                            <p className="export-error-affected-label">
+                              <strong>Affected review items:</strong>
+                            </p>
+                            <ul className="export-error-items">
+                              {exportErrorFeatureIds.map((featureId) => {
+                                const stop = stops.find(
+                                  (candidate) =>
+                                    candidate.featureId === featureId
+                                );
+                                return (
+                                  <li key={featureId}>
+                                    {stop === undefined ? (
+                                      `Review item ${featureId} is no longer available.`
+                                    ) : (
+                                      <a
+                                        className="export-error-focus-link"
+                                        href="#review-step"
+                                        onClick={(event) => {
+                                          event.preventDefault();
+                                          openReviewQueue(featureId);
+                                        }}
+                                      >
+                                        Focus {stop.stopNameExpanded} (
+                                        {stop.sourceFeedId}; Stop code:{" "}
+                                        {stop.rawFields.stop_code?.trim() ||
+                                          "—"}
+                                        )
+                                      </a>
+                                    )}
+                                  </li>
+                                );
+                              })}
+                            </ul>
+                          </>
+                        )}
+                      </div>
+                    )}
+                  </>
                 )}
               </>
             )}
@@ -1661,6 +1871,13 @@ export function App(): ReactElement {
                 <p className="eyebrow">Map</p>
                 <h2 id="map-heading">Candidate map</h2>
               </div>
+              {error !== undefined &&
+                (openWorkflowStep !== "export" ||
+                  error !== exportError?.message) && (
+                  <p className="error" role="alert">
+                    {error}
+                  </p>
+                )}
               <p className="workspace-status" role="status" aria-live="polite">
                 {status}
               </p>
@@ -1675,7 +1892,7 @@ export function App(): ReactElement {
               exactMatchRadiusMeters={profile.autoIdRadiusMeters}
               focusedFeatureId={focusedFeatureId}
               onFeatureClick={setFocusedFeatureId}
-              onAction={applyAction}
+              onAction={loading ? undefined : applyAction}
               theme={theme}
               styleUrl={styleUrl.length > 0 ? styleUrl : undefined}
             />
@@ -1693,6 +1910,8 @@ export function App(): ReactElement {
               id="review-step"
               className="review-workspace glass-background glass-background--level-1"
               aria-labelledby="review-heading"
+              aria-busy={loading}
+              inert={loading}
             >
               <ReviewQueue
                 stops={stops}

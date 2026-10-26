@@ -77,15 +77,15 @@ export function osmElementKey(element: OsmElement | OsmElementRef): string {
 export const elementKey = osmElementKey;
 
 export function tagArrayToRecord(tags: readonly OsmTag[]): OsmTagSet {
-  const record: Record<string, string> = {};
+  const keys = new Set<string>();
   for (const tag of tags) {
     validateOsmTag(tag);
-    if (Object.hasOwn(record, tag.key)) {
+    if (keys.has(tag.key)) {
       throw new Error(`Duplicate OSM tag key: ${tag.key}`);
     }
-    record[tag.key] = tag.value;
+    keys.add(tag.key);
   }
-  return record;
+  return Object.fromEntries(tags.map((tag) => [tag.key, tag.value]));
 }
 
 export function recordToTagArray(tags: OsmTagSet): OsmTag[] {
@@ -101,6 +101,9 @@ export function toOsmNode(element: OSMNodeElement): OsmNode {
     element.id <= 0 ||
     typeof version !== "number" ||
     !Number.isSafeInteger(version) ||
+    version <= 0 ||
+    !Number.isFinite(element.lat) ||
+    !Number.isFinite(element.lon) ||
     element.lat < -90 ||
     element.lat > 90 ||
     element.lon < -180 ||
@@ -125,10 +128,14 @@ export function toOsmWay(element: OSMWayElement): OsmWay {
     element.id <= 0 ||
     typeof version !== "number" ||
     !Number.isSafeInteger(version) ||
+    version <= 0 ||
+    !Number.isFinite(element.center.lat) ||
+    !Number.isFinite(element.center.lon) ||
     element.center.lat < -90 ||
     element.center.lat > 90 ||
     element.center.lon < -180 ||
     element.center.lon > 180 ||
+    element.nodes.length < 2 ||
     element.nodes.some((nodeId) => !Number.isSafeInteger(nodeId) || nodeId <= 0)
   ) {
     throw new Error("Invalid OSM way element");
@@ -147,12 +154,17 @@ export function toOsmWay(element: OSMWayElement): OsmWay {
 
 export function isValidOsmKey(key: string): boolean {
   return (
-    key.length > 0 && key.length <= 255 && !/[\u0000-\u001f\u007f]/u.test(key)
+    key.length > 0 &&
+    key.length <= 255 &&
+    !/[\u0000-\u001f\u007f\ufffe\uffff\p{Surrogate}]/u.test(key)
   );
 }
 
 export function isValidOsmValue(value: string): boolean {
-  return value.length <= 255 && !/[\u0000-\u001f\u007f]/u.test(value);
+  return (
+    value.length <= 255 &&
+    !/[\u0000-\u001f\u007f\ufffe\uffff\p{Surrogate}]/u.test(value)
+  );
 }
 
 export function validateOsmTag(tag: OsmTag): void {

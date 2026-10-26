@@ -51,6 +51,22 @@ const session: StagedSession = {
 };
 
 describe("atomic in-memory session lifecycle", () => {
+  it("does not delete an existing session when its staging ID collides", async () => {
+    const repository = new MemorySessionRepository();
+    await stageAndActivateSession(repository, session);
+    const original = await repository.getActiveSession();
+    await expect(stageAndActivateSession(repository, session)).rejects.toThrow(
+      "already exists"
+    );
+    expect(await repository.getActiveSession()).toEqual(original);
+    await expect(
+      preserveActiveSessionOnFailure(repository, session, async () => {
+        throw new Error("cancelled before staging");
+      })
+    ).rejects.toThrow("cancelled before staging");
+    expect(await repository.getActiveSession()).toEqual(original);
+  });
+
   it("does not replace the active session when staging fails", async () => {
     const repository = new MemorySessionRepository();
     await stageAndActivateSession(repository, session);

@@ -4,8 +4,8 @@ export async function stageAndActivateSession(
   repository: SessionRepository,
   session: StagedSession
 ): Promise<void> {
+  await repository.putStagingSession(session);
   try {
-    await repository.putStagingSession(session);
     await repository.activateStagingSession(session.manifest.sessionId);
   } catch (error) {
     await repository.deleteSession(session.manifest.sessionId);
@@ -18,14 +18,9 @@ export async function preserveActiveSessionOnFailure<T>(
   session: StagedSession,
   operation: () => Promise<T>
 ): Promise<T> {
-  try {
-    const result = await operation();
-    await stageAndActivateSession(repository, session);
-    return result;
-  } catch (error) {
-    await repository.deleteSession(session.manifest.sessionId);
-    throw error;
-  }
+  const result = await operation();
+  await stageAndActivateSession(repository, session);
+  return result;
 }
 
 export function invalidateSessionArtifacts(

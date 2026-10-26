@@ -1,30 +1,23 @@
 # Orcaboros
 
-Orcaboros is a browser-only tool for reviewing GTFS stops against OpenStreetMap nodes and tagged platform ways. It reads `stops.txt` from selected GTFS ZIPs and prepares a JOSM-compatible change file for manual review.
-
-## Status and safe use
-
-Pre-release. Orcaboros does not upload changes to OpenStreetMap. Review every proposal, confirm the feed license permits derived data to be contributed under the ODbL, and follow the [OSM Automated Edits Code of Conduct](https://wiki.openstreetmap.org/wiki/Automated_Edits_code_of_conduct) when applicable.
+Orcaboros is an in-browser GTFS-to-OSM conflation tool.
 
 ## Use
 
-1. Select GTFS ZIPs and review the mapping profile.
-2. Enter an Overpass-compatible endpoint and explicitly start OSM retrieval.
-3. Review proposed matches and changes, then export the file for review in JOSM.
-
-Only `stops.txt` is read; remote GTFS feeds are not supported. Endpoint settings are session-only and never persisted or logged. OSM requests begin only when you start retrieval.
+1. Upload GTFS ZIP file(s)
+2. Configure field-mapping profile
+3. Retrieve OSM data via Overpass
+4. Review and update conflation matches
+5. Export changeset for review and upload via JOSM
 
 ## Development
 
-Requires [Bun](https://bun.sh/) 1.3.14 or newer and a modern browser.
+Requires [Bun](https://bun.sh/) and a modern browser.
 
 ```sh
 bun install
 bun run dev
-bun run check
 ```
-
-`bun run check` formats, type-checks, tests, and builds the app.
 
 See [architecture](docs/architecture.md), [mapping profiles](docs/mapping-profiles.md), and [contribution guidance](CONTRIBUTING.md) for details.
 

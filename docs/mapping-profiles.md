@@ -11,9 +11,13 @@ A schema-v1 JSON profile defines source feeds, OSM tag rules, name and geometry 
 ## Mapping and review
 
 - `mappingRules` maps any `stops.txt` header or computed field (including `stop_name_expanded`, `source_feed_id`, and `source_feed_name`) to an OSM key. Values can be constants, fields, or source metadata; `appliesTo` can limit a rule by feed or location kind. Empty values are omitted, and profile validation checks keys and values.
+- Blank editor rows are inactive and omitted from exported profile JSON, so an unfinished tag or removal row does not make the exported profile unreadable. Invalid active mappings are reported before they can replace the current profile or activate an import.
+- Applying a new profile requires it to enable every imported feed. Compatible profile changes refresh the stops' source metadata as well as their name cleanup.
 - Every stock profile maps `stop_name_expanded` to `name` and maps `stop_code` to `gtfs:stop_code:<FEED_ID>`. Street-name cleanup is enabled by default; it capitalizes all-uppercase names and expands supported US street abbreviations and directions. Raw `stop_name` remains available. Changing profile settings reprocesses stops and invalidates candidates and review state.
 - `stop_id` is not mapped. OSM identity tags (`gtfs:stop_id:<FEED_ID>`) can help find and match existing features. Stock profiles propose removing `gtfs:stop_id`, `gtfs:stop_id:<FEED_ID>`, and `gtfs:feed` from matched elements; the feed-specific stop-code tag is preserved instead.
-- Per-feed `additionalTags` supports constants, fields, and source metadata; stock profiles use it for `public_transport=platform` and `highway=bus_stop` on platforms. Per-feed `removeKeys` proposes reviewable removals from matched elements only; an active GTFS mapping takes precedence, and new elements are unaffected. Unmapped OSM tags are preserved, and differing values default to keeping the current value until explicitly changed.
+- Per-feed `additionalTags` supports constants, fields, and source metadata; stock profiles use it for `public_transport=platform` and `highway=bus_stop` on platforms. Per-feed `removeKeys` proposes reviewable removals from matched elements only; an active GTFS mapping takes precedence, and new elements are unaffected. Unmapped OSM tags are preserved, and differing values default to keeping the current value.
+- Export honors the recorded tag choices, including keeping a legacy identity tag or rejecting an expanded name. Features from different feeds may share an OSM element only when their geometry and tag decisions are consistent; conflicting decisions must be reconciled before exporting.
+- The focused feature's Comparison pane is a read-only GTFS/OSM tag diff, with coordinates and calculated match distance in a separate metadata table below. Review actions remain in the Decision pane, and the map popup supports linking another OSM element.
 
 ## Geometry and defaults
 

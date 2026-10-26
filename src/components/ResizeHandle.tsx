@@ -46,13 +46,14 @@ export function ResizeHandle({
     return () => {
       document.body.classList.remove(resizingClass);
     };
-  }, [isDragging, max, min, orientation]);
+  }, [isDragging, orientation]);
 
   function handlePointerDown(event: ReactPointerEvent<HTMLDivElement>): void {
-    if (event.button !== 0) {
+    if (event.button !== 0 || pointerId.current !== null) {
       return;
     }
     event.preventDefault();
+    event.currentTarget.focus();
     pointerId.current = event.pointerId;
     if (typeof event.currentTarget.setPointerCapture === "function") {
       event.currentTarget.setPointerCapture(event.pointerId);
@@ -136,6 +137,7 @@ export function ResizeHandle({
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
       onPointerCancel={handlePointerUp}
+      onLostPointerCapture={handlePointerUp}
     />
   );
 }

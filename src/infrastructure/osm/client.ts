@@ -15,10 +15,6 @@ import {
   validateOverpassEndpoint
 } from "./query";
 
-type OverpassResponse = {
-  elements?: readonly unknown[];
-};
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -148,6 +144,12 @@ function parseElements(text: string): readonly OsmElement[] {
       "The Overpass response had no elements"
     );
   }
+  if (parsed.remark !== undefined && parsed.remark !== "") {
+    throw new OverpassRequestError(
+      "malformed-data",
+      "The Overpass server reported an incomplete query result. Try a smaller extent or another endpoint."
+    );
+  }
   if (parsed.elements.length > OVERPASS_MAX_ELEMENTS) {
     throw new OverpassRequestError(
       "node-limit",
@@ -178,6 +180,11 @@ function parseElements(text: string): readonly OsmElement[] {
           tags: element.tags
         })
       );
+    } else {
+      throw new OverpassRequestError(
+        "malformed-data",
+        "The Overpass response contained an invalid or unsupported OSM element"
+      );
     }
   }
   return elements;
@@ -197,6 +204,12 @@ export async function retrieveOverpassElements(
   const cancel = () => controller.abort();
   userSignal?.addEventListener("abort", cancel, { once: true });
   try {
+    if (userSignal?.aborted) {
+      throw new DOMException(
+        "The Overpass request was cancelled",
+        "AbortError"
+      );
+    }
     const request = buildOverpassRequest(query);
     const response = await fetch(url, {
       method: "POST",
@@ -227,6 +240,7 @@ export async function retrieveOverpassElements(
     }
     throw sanitizeOverpassError(error);
   } finally {
+    controller.abort();
     clearTimeout(timeout);
     userSignal?.removeEventListener("abort", cancel);
   }

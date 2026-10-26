@@ -1,4 +1,4 @@
-import { zipSync, strToU8 } from "fflate";
+import { zipSync, strToU8, Zip, ZipPassThrough } from "fflate";
 import { Blob as NodeBlob } from "node:buffer";
 import { describe, expect, it } from "vitest";
 import { importGtfsArchive } from "../../src/infrastructure/gtfs/importer";
@@ -11,6 +11,54 @@ function archiveWithStops(csv: string, name = "US-WA-KCM.zip") {
 }
 
 describe("streaming GTFS importer", () => {
+  it("rejects duplicate stops.txt entries even after the first finishes", async () => {
+    const chunks: Uint8Array[] = [];
+    const zip = new Zip((error, chunk) => {
+      if (error !== null) {
+        throw error;
+      }
+      chunks.push(chunk);
+    });
+    for (const stopId of ["one", "two"]) {
+      const entry = new ZipPassThrough("stops.txt");
+      zip.add(entry);
+      entry.push(
+        strToU8(
+          `stop_id,stop_name,stop_lat,stop_lon\n${stopId},Stop,47,-122\n`
+        ),
+        true
+      );
+    }
+    zip.end();
+    const archive = Object.assign(
+      new NodeBlob(chunks.map((chunk) => new Uint8Array(chunk))),
+      {
+        name: "US-WA-KCM.zip"
+      }
+    );
+
+    await expect(
+      importGtfsArchive(archive, {
+        definitions: STOCK_SOURCE_FEED_DEFINITIONS
+      })
+    ).rejects.toMatchObject({
+      code: "zip",
+      detail: "ZIP contains duplicate stops.txt entries"
+    });
+  });
+
+  it("propagates validation errors from asynchronously inflated entries", async () => {
+    const archive = archiveWithStops(
+      "stop_id,stop_name,stop_lat,stop_lon\n" +
+        "same,A sufficiently long stop name,47,-122\n".repeat(20_000)
+    );
+    await expect(
+      importGtfsArchive(archive, {
+        definitions: STOCK_SOURCE_FEED_DEFINITIONS
+      })
+    ).rejects.toMatchObject({ code: "duplicate-stop-id" });
+  });
+
   it("reports byte progress while fingerprinting an archive", async () => {
     const archive = archiveWithStops(
       "stop_id,stop_name,stop_lat,stop_lon\nstop-1,Test,47,-122"

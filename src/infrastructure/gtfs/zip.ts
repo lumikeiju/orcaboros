@@ -50,9 +50,19 @@ export async function consumeZipEntry(
   onRawChunk?: (chunk: Uint8Array) => void
 ): Promise<void> {
   let found = false;
-  let entryFinished: Promise<void> | undefined;
-  let resolveEntry: (() => void) | undefined;
-  let rejectEntry: ((reason: Error) => void) | undefined;
+  let entryError: Error | undefined;
+  let resolveEntry: () => void = () => undefined;
+  const entryFinished = new Promise<void>((resolve) => {
+    resolveEntry = resolve;
+  });
+  let terminateEntry: (() => void) | undefined;
+  const failEntry = (error: Error): void => {
+    entryError ??= error;
+    terminateEntry?.();
+    resolveEntry();
+  };
+  const cancel = (): void =>
+    failEntry(new DOMException("The import was cancelled", "AbortError"));
   const unzip = new Unzip();
   unzip.register(AsyncUnzipInflate);
   unzip.onfile = (entry) => {
@@ -60,41 +70,63 @@ export async function consumeZipEntry(
       return;
     }
     if (found) {
-      rejectEntry?.(
+      failEntry(
         new ZipStreamError(`ZIP contains duplicate ${entryName} entries`)
       );
       return;
     }
     found = true;
-    entryFinished = new Promise<void>((resolve, reject) => {
-      resolveEntry = resolve;
-      rejectEntry = reject;
-    });
+    terminateEntry = () => entry.terminate();
     entry.ondata = (error, data, final) => {
+      if (entryError !== undefined) {
+        return;
+      }
       if (error !== null) {
-        rejectEntry?.(
+        failEntry(
           new ZipStreamError("The selected ZIP entry could not be decompressed")
         );
         return;
       }
-      onChunk(data, final);
+      try {
+        onChunk(data, final);
+      } catch (caught: unknown) {
+        failEntry(
+          caught instanceof Error
+            ? caught
+            : new ZipStreamError(
+                "The selected ZIP entry could not be processed"
+              )
+        );
+        return;
+      }
       if (final) {
-        resolveEntry?.();
+        resolveEntry();
       }
     };
     entry.start();
   };
 
+  signal.addEventListener("abort", cancel, { once: true });
   try {
+    if (signal.aborted) {
+      cancel();
+      throw entryError;
+    }
     for await (const chunk of blobChunks(archive, signal)) {
       onRawChunk?.(chunk);
       unzip.push(chunk);
+      if (entryError !== undefined) {
+        throw entryError;
+      }
     }
     unzip.push(new Uint8Array(0), true);
     if (!found) {
       throw new ZipStreamError(`Required ZIP entry ${entryName} was not found`);
     }
     await entryFinished;
+    if (entryError !== undefined) {
+      throw entryError;
+    }
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") {
       throw error;
@@ -103,5 +135,8 @@ export async function consumeZipEntry(
       throw error;
     }
     throw new ZipStreamError("The selected ZIP archive could not be read");
+  } finally {
+    signal.removeEventListener("abort", cancel);
+    terminateEntry?.();
   }
 }

@@ -19,8 +19,21 @@ export function IntroWarning({
 
   useEffect(() => {
     if (isOpen) {
+      const previouslyFocusedElement = document.activeElement;
       continueButtonRef.current?.focus();
-    } else if (!continueCallbackCalledRef.current) {
+      return () => {
+        if (
+          previouslyFocusedElement instanceof HTMLElement &&
+          previouslyFocusedElement.isConnected
+        ) {
+          previouslyFocusedElement.focus();
+        }
+      };
+    }
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen && !continueCallbackCalledRef.current) {
       continueCallbackCalledRef.current = true;
       onContinue?.();
     }

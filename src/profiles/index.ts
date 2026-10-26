@@ -9,6 +9,7 @@ import soundTransitProfileJson from "./US-WA-ST.json";
 import washingtonStateFerriesProfileJson from "./US-WA-WSF.json";
 import {
   MappingProfile,
+  type MappingRule,
   ProfileValidationError,
   validateMappingProfile
 } from "../domain/profile";
@@ -153,7 +154,19 @@ export function parseProfileJson(text: string): MappingProfile {
 }
 
 export function serializeProfile(profile: MappingProfile): string {
-  return `${JSON.stringify(profile, null, 2)}\n`;
+  const activeRule = (rule: MappingRule): boolean =>
+    rule.key.trim().length > 0 &&
+    (rule.value.kind !== "constant" || rule.value.value.length > 0);
+  const normalized = validateMappingProfile({
+    ...profile,
+    mappingRules: profile.mappingRules.filter(activeRule),
+    sourceFeeds: profile.sourceFeeds.map((sourceFeed) => ({
+      ...sourceFeed,
+      additionalTags: sourceFeed.additionalTags?.filter(activeRule),
+      removeKeys: sourceFeed.removeKeys?.filter((key) => key.trim().length > 0)
+    }))
+  });
+  return `${JSON.stringify(normalized, null, 2)}\n`;
 }
 
 export async function fingerprintProfile(

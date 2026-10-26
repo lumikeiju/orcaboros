@@ -22,6 +22,7 @@ type SourcePickerProps = {
   definitions: readonly SourceFeedDefinition[];
   selected: readonly SelectedArchive[];
   allowUnknown?: boolean;
+  disabled?: boolean;
   onSelected: (
     archives: readonly SelectedArchive[],
     errors: readonly string[]
@@ -32,6 +33,7 @@ export function SourcePicker({
   definitions,
   selected,
   allowUnknown = false,
+  disabled = false,
   onSelected
 }: SourcePickerProps): ReactElement {
   const [isDragActive, setIsDragActive] = useState(false);
@@ -46,7 +48,7 @@ export function SourcePicker({
   const profileIssues = validateSourceFeedSelection(
     selectedIds,
     definitions
-  ).filter((issue) => allowUnknown || issue.kind !== "unsupported");
+  ).filter((issue) => !allowUnknown || issue.kind !== "unsupported");
 
   function selectionErrorsFor(
     archives: readonly SelectedArchive[],
@@ -66,6 +68,9 @@ export function SourcePicker({
   }
 
   function handleFiles(files: readonly File[]): void {
+    if (disabled) {
+      return;
+    }
     const errors: string[] = [];
     const newArchives: SelectedArchive[] = [];
     for (const file of files) {
@@ -165,6 +170,7 @@ export function SourcePicker({
           type="file"
           accept=".zip,application/zip"
           multiple
+          disabled={disabled}
           onChange={handleChange}
         />
       </label>
@@ -193,6 +199,7 @@ export function SourcePicker({
                   <input
                     id={`gtfs-feed-id-${index}`}
                     type="text"
+                    disabled={disabled}
                     value={archive.sourceFeedId}
                     aria-label={`GTFS Feed ID for ${archive.file.name}`}
                     aria-invalid={profileIssues.some(
@@ -219,6 +226,7 @@ export function SourcePicker({
                   )}
                   <button
                     type="button"
+                    disabled={disabled}
                     className="icon-button secondary"
                     aria-label={`Remove ${archive.file.name}`}
                     title={`Remove ${archive.file.name}`}

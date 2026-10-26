@@ -66,7 +66,7 @@ export class ProfileValidationError extends Error {
 
   constructor(issues: readonly ProfileValidationIssue[]) {
     super(
-      `Mapping profile is invalid (${issues.length} issue${issues.length === 1 ? "" : "s"})`
+      `Mapping profile is invalid (${issues.length} issue${issues.length === 1 ? "" : "s"}): ${issues.map((issue) => `${issue.path}: ${issue.message}`).join("; ")}`
     );
     this.name = "ProfileValidationError";
     this.issues = issues;
@@ -237,7 +237,12 @@ export function validateMappingProfile(
               message: "must be a string record"
             });
           } else {
-            metadata = {};
+            metadata = Object.fromEntries(
+              entries.filter(
+                (entry): entry is [string, string] =>
+                  typeof entry[1] === "string"
+              )
+            );
             for (const [key, value] of entries) {
               if (typeof value === "string") {
                 if (!isValidOsmKey(key) || !isValidOsmValue(value)) {
@@ -246,7 +251,6 @@ export function validateMappingProfile(
                     message: "must contain safe OSM key/value text"
                   });
                 }
-                metadata[key] = value;
               }
             }
           }
@@ -344,6 +348,12 @@ export function validateMappingProfile(
       const applicability = isRecord(item.appliesTo)
         ? item.appliesTo
         : undefined;
+      if (item.appliesTo !== undefined && applicability === undefined) {
+        issues.push({
+          path: `${path}.appliesTo`,
+          message: "must be an object"
+        });
+      }
       const rawSourceFeedIds = stringArray(
         applicability?.sourceFeedIds,
         `${path}.appliesTo.sourceFeedIds`,
@@ -614,8 +624,15 @@ export function mappingFieldValue(
     case "source_feed_name":
       return stop.sourceFeedName;
     default:
-      return stop.rawFields[field] ?? "";
+      return Object.hasOwn(stop.rawFields, field) ? stop.rawFields[field] : "";
   }
+}
+
+export function sourceMetadataValue(key: string, stop: EligibleStop): string {
+  const metadata = stop.sourceFeedMetadata;
+  return metadata !== undefined && Object.hasOwn(metadata, key)
+    ? metadata[key]
+    : "";
 }
 
 export function evaluateMappingRules(
@@ -628,7 +645,7 @@ export function evaluateMappingRules(
       (sourceFeed) => sourceFeed.id === stop.sourceFeedId
     )?.additionalTags ?? [];
   for (const rule of [...profile.mappingRules, ...feedAdditionalTags]) {
-    if (!applies(rule, stop)) {
+    if (rule.key.trim().length === 0 || !applies(rule, stop)) {
       continue;
     }
     const value =
@@ -636,7 +653,7 @@ export function evaluateMappingRules(
         ? rule.value.value
         : rule.value.kind === "field"
           ? mappingFieldValue(rule.value.field, stop)
-          : (stop.sourceFeedMetadata?.[rule.value.key] ?? "");
+          : sourceMetadataValue(rule.value.key, stop);
     if (value.length === 0) {
       continue;
     }

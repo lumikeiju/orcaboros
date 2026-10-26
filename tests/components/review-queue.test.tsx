@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup } from "@testing-library/react";
@@ -82,6 +84,17 @@ function diffRow(container: HTMLElement, fieldName: string): Element | null {
   );
 }
 
+function metadataRow(
+  container: HTMLElement,
+  fieldName: string
+): Element | null {
+  return (
+    [...container.querySelectorAll(".review-metadata-field")]
+      .find((field) => field.textContent === fieldName)
+      ?.closest("tr") ?? null
+  );
+}
+
 function renderCoordinateComparison(
   geometryTarget: GeometryTarget,
   node: OsmNode | OsmWay
@@ -109,6 +122,131 @@ function renderCoordinateComparison(
 afterEach(() => cleanup());
 
 describe("ReviewQueue", () => {
+  it("keeps the comparison diff content-sized", () => {
+    const stylesheet = document.createElement("style");
+    stylesheet.textContent = readFileSync(
+      resolve("src", "styles", "app.css"),
+      "utf8"
+    );
+    document.head.append(stylesheet);
+    try {
+      const { container } = render(
+        <ReviewQueue
+          stops={[stop]}
+          matches={new Map()}
+          reviews={
+            new Map([
+              [
+                stop.featureId,
+                makeReview(stop.featureId, { name: "Proposed name" })
+              ]
+            ])
+          }
+          onAction={vi.fn()}
+          onFocusFeature={vi.fn()}
+        />
+      );
+      expect(container.querySelector(".review-diff")).toHaveStyle({
+        flex: "0 0 auto"
+      });
+    } finally {
+      stylesheet.remove();
+    }
+  });
+
+  it("renders the tag and metadata tables without editing controls", () => {
+    render(
+      <ReviewQueue
+        stops={[stop]}
+        matches={
+          new Map([
+            [
+              stop.featureId,
+              {
+                kind: "review",
+                candidates: [
+                  { ...makeExactCandidate(23, 4), exactIdentity: false }
+                ]
+              }
+            ]
+          ])
+        }
+        reviews={
+          new Map([
+            [
+              stop.featureId,
+              makeReview(stop.featureId, { name: "Proposed name" })
+            ]
+          ])
+        }
+        onAction={vi.fn()}
+        onFocusFeature={vi.fn()}
+      />
+    );
+    const comparison = screen.getByRole("region", { name: "Comparison" });
+    const detail = comparison.querySelector(".review-detail");
+    expect(detail?.children).toHaveLength(2);
+    expect(detail?.lastElementChild).toHaveClass("review-diff");
+    const tables = within(comparison).getAllByRole("table");
+    expect(tables).toHaveLength(2);
+    expect(tables[0]).toHaveClass("review-diff-columns");
+    expect(tables[1]).toHaveClass("review-metadata-table");
+    expect(
+      within(tables[0]).getByRole("columnheader", {
+        name: "OSM node 23"
+      })
+    ).toBeInTheDocument();
+    const osmElementLink = within(tables[0]).getByRole("link", {
+      name: "node 23"
+    });
+    expect(osmElementLink).toHaveAttribute(
+      "href",
+      "https://www.openstreetmap.org/node/23"
+    );
+    expect(osmElementLink).toHaveAttribute("target", "_blank");
+    expect(osmElementLink).toHaveAttribute("rel", "noopener noreferrer");
+    expect(
+      comparison.querySelector("fieldset, input, button, select")
+    ).toBeNull();
+  });
+
+  it("records an OSM-only element as reviewed unchanged without deleting it", () => {
+    const onAction = vi.fn();
+    const { container } = render(
+      <ReviewQueue
+        stops={[]}
+        nodes={[
+          {
+            id: 99,
+            version: 1,
+            latitude: 47,
+            longitude: -122,
+            tags: { "gtfs:stop_id:US-WA-CT": "old" }
+          }
+        ]}
+        validStopIds={new Map([["US-WA-CT", new Set<string>()]])}
+        matches={new Map()}
+        reviews={new Map()}
+        onAction={onAction}
+        onFocusFeature={vi.fn()}
+      />
+    );
+    expect(
+      container.querySelectorAll(".review-diff-columns tbody tr")
+    ).toHaveLength(1);
+    expect(diffRow(container, "Center latitude")).toBeNull();
+    expect(metadataRow(container, "Center latitude")).toHaveTextContent(
+      "47.000000"
+    );
+    expect(metadataRow(container, "Center longitude")).toHaveTextContent(
+      "-122.000000"
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Keep OSM element unchanged" })
+    );
+    expect(onAction).toHaveBeenCalledWith("removed-99", { type: "skip" });
+  });
+
   it("focuses the map with an explicit button in semantic list items", () => {
     const onFocusFeature = vi.fn();
     const { container } = render(
@@ -153,34 +291,42 @@ describe("ReviewQueue", () => {
     expect(columns[0]).toHaveClass("review-queue-panel");
     expect(columns[1]).toHaveClass("review-decision");
     expect(columns[2]).toHaveClass("review-comparison");
+    const tagTable = screen.getByRole("table", {
+      name: "GTFS-mapped tags on the left and OSM tags on the right"
+    });
     expect(
-      screen.getByRole("columnheader", { name: "GTFS" })
+      within(tagTable).getByRole("columnheader", { name: "GTFS" })
     ).toBeInTheDocument();
     expect(
-      screen.getByRole("columnheader", { name: "OSM" })
+      within(tagTable).getByRole("columnheader", { name: "OSM" })
     ).toBeInTheDocument();
     expect(
-      container.querySelectorAll(".review-diff-columns tbody tr")
-    ).toHaveLength(6);
+      tagTable.querySelectorAll(".review-diff-columns tbody tr")
+    ).toHaveLength(3);
     expect(container.querySelectorAll(".review-diff-row.is-add")).toHaveLength(
-      5
+      3
     );
     expect(container.querySelectorAll(".review-diff-row.is-none")).toHaveLength(
-      1
+      0
     );
     expect(
       container.querySelectorAll(
         ".review-diff-row.is-add .review-diff-cell-add.is-highlighted"
       )
-    ).toHaveLength(5);
+    ).toHaveLength(3);
     expect(
       container.querySelectorAll(
         ".review-diff-row.is-add .review-diff-cell-remove.is-highlighted"
       )
     ).toHaveLength(0);
+    expect(metadataRow(container, "Latitude")).toHaveClass("is-add");
+    expect(metadataRow(container, "Longitude")).toHaveClass("is-add");
+    expect(metadataRow(container, "Match distance")).toHaveClass("is-none");
     expect(tagFieldCount(container, "public_transport")).toBe(2);
     expect(screen.getByText("platform")).toBeInTheDocument();
-    expect(screen.getByText("US-WA-CT • CT-23 • platform")).toBeInTheDocument();
+    expect(
+      screen.getByText("US-WA-CT • Stop code: CT-23 • platform")
+    ).toBeInTheDocument();
 
     expect(container.querySelector("li[role='button']")).toBeNull();
     const locateButton = screen.getByRole("button", {
@@ -224,7 +370,9 @@ describe("ReviewQueue", () => {
       />
     );
 
-    expect(screen.getByText("US-WA-CT • — • platform")).toBeInTheDocument();
+    expect(
+      screen.getByText("US-WA-CT • Stop code: — • platform")
+    ).toBeInTheDocument();
   });
 
   it("allows all result filters to be cleared and reopens them from the empty state", () => {
@@ -307,7 +455,13 @@ describe("ReviewQueue", () => {
     );
 
     const rows = container.querySelectorAll(".review-diff-columns tbody tr");
-    expect(rows).toHaveLength(9);
+    expect(rows).toHaveLength(6);
+    expect(
+      container.querySelector(".review-diff-columns")
+    ).not.toHaveTextContent("Latitude");
+    expect(
+      container.querySelector(".review-diff-columns")
+    ).not.toHaveTextContent("Match distance");
     expect(tagFieldCount(container, stop.identityTag.key)).toBe(2);
     expect(tagFieldCount(container, "public_transport")).toBe(2);
     expect(tagFieldCount(container, "ref")).toBe(2);
@@ -371,9 +525,7 @@ describe("ReviewQueue", () => {
       />
     );
 
-    const mapSelection = screen.getByRole("group", { name: "Selected on map" });
-    expect(within(mapSelection).getByRole("radio")).toBeChecked();
-    expect(diffRow(container, "latitude")).toHaveTextContent("48.015000");
+    expect(metadataRow(container, "Latitude")).toHaveTextContent("48.015000");
     expect(screen.getByText("Existing OSM replacement")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Accept match" }));
@@ -431,8 +583,8 @@ describe("ReviewQueue", () => {
     };
     const container = renderCoordinateComparison("osm", node);
 
-    expect(diffRow(container, "stop_lat")).toHaveClass("is-none");
-    expect(diffRow(container, "stop_lon")).toHaveClass("is-none");
+    expect(metadataRow(container, "Latitude")).toHaveClass("is-none");
+    expect(metadataRow(container, "Longitude")).toHaveClass("is-none");
   });
 
   it("marks changed node coordinates for the GTFS geometry target", () => {
@@ -445,8 +597,8 @@ describe("ReviewQueue", () => {
     };
     const container = renderCoordinateComparison("gtfs", node);
 
-    expect(diffRow(container, "stop_lat")).toHaveClass("is-both");
-    expect(diffRow(container, "stop_lon")).toHaveClass("is-both");
+    expect(metadataRow(container, "Latitude")).toHaveClass("is-both");
+    expect(metadataRow(container, "Longitude")).toHaveClass("is-both");
   });
 
   it("does not mark platform-way coordinates as changes for the GTFS target", () => {
@@ -461,8 +613,12 @@ describe("ReviewQueue", () => {
     };
     const container = renderCoordinateComparison("gtfs", way);
 
-    expect(diffRow(container, "stop_lat")).toHaveClass("is-none");
-    expect(diffRow(container, "stop_lon")).toHaveClass("is-none");
+    expect(screen.getByRole("link", { name: "way 32" })).toHaveAttribute(
+      "href",
+      "https://www.openstreetmap.org/way/32"
+    );
+    expect(metadataRow(container, "Latitude")).toHaveClass("is-none");
+    expect(metadataRow(container, "Longitude")).toHaveClass("is-none");
   });
 
   it("does not focus the map when a review decision is clicked", () => {

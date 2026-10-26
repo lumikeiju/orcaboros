@@ -110,9 +110,7 @@ export function rowToRecord(
   headers: readonly string[],
   values: readonly string[]
 ): Readonly<Record<string, string>> {
-  const record: Record<string, string> = {};
-  headers.forEach((header, index) => {
-    record[header] = values[index] ?? "";
-  });
-  return record;
+  return Object.fromEntries(
+    headers.map((header, index) => [header, values[index] ?? ""])
+  );
 }

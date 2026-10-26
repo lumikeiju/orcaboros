@@ -3,9 +3,24 @@ import { createEligibleStop } from "../../src/domain/gtfs";
 import { ChangeDraft } from "../../src/domain/change";
 import { OsmWay } from "../../src/domain/osm";
 import {
+  ExportValidationError,
   serializeJosmOsm,
   serializeOsmChange
 } from "../../src/infrastructure/osm/change-export";
+
+function captureExportValidationError(
+  action: () => void
+): ExportValidationError {
+  try {
+    action();
+  } catch (error) {
+    if (error instanceof ExportValidationError) {
+      return error;
+    }
+    throw error;
+  }
+  throw new Error("Expected an export validation error.");
+}
 
 function fixtureStop(id: string, kind: "platform" | "station" = "platform") {
   const result = createEligibleStop("US-WA-KCM", "King County Metro", {
@@ -25,6 +40,64 @@ function fixtureStop(id: string, kind: "platform" | "station" = "platform") {
 }
 
 describe("deterministic OSM Change export", () => {
+  it.each(["\ud800", "\ufffe", "\uffff"])(
+    "reports invalid tag values and their affected feature",
+    (invalidText) => {
+      const stop = fixtureStop("invalid-xml");
+      const error = captureExportValidationError(() =>
+        serializeJosmOsm({
+          sessionId: "session-1",
+          snapshotId: "snapshot-1",
+          creates: [
+            {
+              feature: stop,
+              state: "create-selected",
+              latitude: stop.latitude,
+              longitude: stop.longitude,
+              tags: { name: invalidText }
+            }
+          ],
+          modifications: []
+        })
+      );
+      expect(error.issues).toEqual([
+        {
+          message: 'Value for tag "name" is not a valid OSM string.',
+          featureIds: [stop.featureId]
+        }
+      ]);
+    }
+  );
+
+  it("reports invalid tag keys and all affected features", () => {
+    const firstStop = fixtureStop("invalid-key-1");
+    const secondStop = fixtureStop("invalid-key-2");
+    const error = captureExportValidationError(() =>
+      serializeJosmOsm({
+        sessionId: "session-1",
+        snapshotId: "snapshot-1",
+        creates: [firstStop, secondStop].map((feature) => ({
+          feature,
+          state: "create-selected" as const,
+          latitude: feature.latitude,
+          longitude: feature.longitude,
+          tags: { ["bad\u0001key"]: "value" }
+        })),
+        modifications: []
+      })
+    );
+    expect(error.issues).toEqual([
+      {
+        message: 'Tag key "bad\\u0001key" is not a valid OSM string.',
+        featureIds: [firstStop.featureId]
+      },
+      {
+        message: 'Tag key "bad\\u0001key" is not a valid OSM string.',
+        featureIds: [secondStop.featureId]
+      }
+    ]);
+  });
+
   it("emits sorted creates, XML escaping, and exact metadata", () => {
     const stop = fixtureStop("2");
     const draft: ChangeDraft = {

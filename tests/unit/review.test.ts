@@ -282,6 +282,25 @@ describe("computeConflationProgress", () => {
     ] as const;
   }
 
+  it("lets OSM-only elements be reviewed unchanged without proposing a deletion", () => {
+    const nodes: OsmNode[] = [
+      {
+        id: 99,
+        version: 1,
+        latitude: 47,
+        longitude: -122,
+        tags: { "gtfs:stop_id:US-WA-KCM": "stale" }
+      }
+    ];
+    const reviews = new Map([review("removed-99", "skipped")]);
+    expect(
+      computeConflationProgress({ stops: [], nodes, reviews, validStopIds })
+    ).toEqual({ resolved: 1, total: 1 });
+    expect(
+      firstUndecidedFeatureId({ stops: [], nodes, reviews, validStopIds })
+    ).toBeUndefined();
+  });
+
   it("counts resolved decisions against only-in-osm plus GTFS features", () => {
     const stops = [fixtureStop(), fixtureStop(), fixtureStop()].map(
       (stop, index) => ({

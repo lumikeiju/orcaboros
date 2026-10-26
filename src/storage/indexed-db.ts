@@ -75,6 +75,11 @@ export class IndexedDbSessionRepository implements SessionRepository {
       transaction.objectStore(SESSION_STORE).get(sessionId)
     );
     if (!isStoredRecord(value)) {
+      if (value !== undefined) {
+        throw new StorageError(
+          "The stored session is invalid. Reset it before importing again."
+        );
+      }
       return undefined;
     }
     const { status: _status, ...session } = value;
@@ -140,18 +145,34 @@ export class IndexedDbSessionRepository implements SessionRepository {
   }
 
   async putActiveSession(session: StoredSession): Promise<void> {
-    const activeSessionId = await this.getActiveSessionId();
-    if (activeSessionId !== session.manifest.sessionId) {
-      throw new StorageError(
-        `Session ${session.manifest.sessionId} is not active`
-      );
-    }
     const database = await this.databasePromise;
-    const transaction = database.transaction(SESSION_STORE, "readwrite");
-    transaction
-      .objectStore(SESSION_STORE)
-      .put({ ...session, status: "active" });
-    await transactionComplete(transaction);
+    const transaction = database.transaction(
+      [META_STORE, SESSION_STORE],
+      "readwrite"
+    );
+    const complete = transactionComplete(transaction);
+    let inactive = false;
+    const request = transaction.objectStore(META_STORE).get(ACTIVE_KEY);
+    request.onsuccess = () => {
+      if (request.result !== session.manifest.sessionId) {
+        inactive = true;
+        transaction.abort();
+        return;
+      }
+      transaction
+        .objectStore(SESSION_STORE)
+        .put({ ...session, status: "active" });
+    };
+    try {
+      await complete;
+    } catch (error: unknown) {
+      if (inactive) {
+        throw new StorageError(
+          `Session ${session.manifest.sessionId} is not active`
+        );
+      }
+      throw error;
+    }
   }
 
   async deleteSession(sessionId: string): Promise<void> {

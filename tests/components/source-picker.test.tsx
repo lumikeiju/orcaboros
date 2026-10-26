@@ -9,6 +9,44 @@ import { STOCK_SOURCE_FEED_DEFINITIONS } from "../../src/domain/source-feed";
 afterEach(() => cleanup());
 
 describe("SourcePicker", () => {
+  it("does not label allowed custom feed IDs as unsupported", () => {
+    render(
+      <SourcePicker
+        definitions={STOCK_SOURCE_FEED_DEFINITIONS}
+        selected={[
+          { file: new File([], "CUSTOM.zip"), sourceFeedId: "CUSTOM" }
+        ]}
+        allowUnknown
+        onSelected={vi.fn()}
+      />
+    );
+    expect(screen.queryByText(/Unsupported GTFS ZIPs/)).toBeNull();
+    expect(
+      screen.getByLabelText("GTFS Feed ID for CUSTOM.zip")
+    ).toHaveAttribute("aria-invalid", "false");
+  });
+
+  it("blocks file changes and drops while processing", () => {
+    const onSelected = vi.fn();
+    const { container } = render(
+      <SourcePicker
+        definitions={STOCK_SOURCE_FEED_DEFINITIONS}
+        selected={[]}
+        disabled
+        onSelected={onSelected}
+      />
+    );
+    expect(screen.getByLabelText("Choose or drop GTFS ZIPs")).toBeDisabled();
+    const target = container.querySelector(".file-drop-zone");
+    if (target === null) {
+      throw new Error("Missing drop target");
+    }
+    fireEvent.drop(target, {
+      dataTransfer: { files: [new File([], "CUSTOM.zip")] }
+    });
+    expect(onSelected).not.toHaveBeenCalled();
+  });
+
   it("shows derived IDs before import and does not make a network request", () => {
     const onSelected = vi.fn();
     render(

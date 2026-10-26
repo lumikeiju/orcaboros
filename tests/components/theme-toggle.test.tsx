@@ -17,13 +17,13 @@ describe("ThemeToggle", () => {
     const toggle = screen.getByRole("button", {
       name: "Switch to light mode"
     });
-    expect(toggle).toHaveAttribute("aria-pressed", "true");
+    expect(toggle).not.toHaveAttribute("aria-pressed");
 
     fireEvent.click(toggle);
 
     expect(document.documentElement).toHaveAttribute("data-theme", "light");
     expect(
       screen.getByRole("button", { name: "Switch to dark mode" })
-    ).toHaveAttribute("aria-pressed", "false");
+    ).not.toHaveAttribute("aria-pressed");
   });
 });

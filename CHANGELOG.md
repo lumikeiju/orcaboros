@@ -8,21 +8,7 @@ The format of this changelog is based on [Keep a Changelog](https://keepachangel
 
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) and [Conventional Commits](https://www.conventionalcommits.org/).
 
-## Unreleased
-
-### Added
-
--
-
-### Changed
-
--
-
-### Fixed
-
--
-
-## [v0.8.0] (2026-10-21)
+## [v1.0.0] (2026-10-25)
 
 ### Added
 

@@ -13,15 +13,27 @@ const CHANGESET_HOST = "https://lumikeiju.dev/orcaboros/";
 const CHANGESET_COMMENT =
   "Edit public transport features using GTFS data | #Orcaboros";
 
-export class ExportValidationError extends Error {
-  readonly issues: readonly string[];
+export type ExportValidationIssue = {
+  message: string;
+  featureIds: readonly string[];
+};
 
-  constructor(issues: readonly string[]) {
+type ExportValidationIssueInput = string | ExportValidationIssue;
+
+export class ExportValidationError extends Error {
+  readonly issues: readonly ExportValidationIssue[];
+
+  constructor(issues: readonly ExportValidationIssueInput[]) {
+    const details = issues.map((issue) =>
+      typeof issue === "string"
+        ? { message: issue, featureIds: [] }
+        : { ...issue, featureIds: [...new Set(issue.featureIds)] }
+    );
     super(
-      `OSM Change export is invalid (${issues.length} issue${issues.length === 1 ? "" : "s"})`
+      `OSM Change export is invalid (${details.length} issue${details.length === 1 ? "" : "s"}): ${details.map(({ message }) => message).join("; ")}`
     );
     this.name = "ExportValidationError";
-    this.issues = issues;
+    this.issues = details;
   }
 }
 
@@ -45,16 +57,35 @@ function coordinate(value: number): string {
 }
 
 function sortedTags(tags: OsmTagSet): readonly [string, string][] {
-  const entries = Object.entries(tags);
-  const invalid = entries.filter(
-    ([key, value]) => !isValidOsmKey(key) || !isValidOsmValue(value)
+  return Object.entries(tags).sort(([left], [right]) =>
+    lexicalCompare(left, right)
   );
-  if (invalid.length > 0) {
-    throw new ExportValidationError([
-      "tag keys and values must be valid OSM strings"
-    ]);
+}
+
+function invalidTagIssues(
+  tags: OsmTagSet,
+  featureIds: readonly string[]
+): readonly ExportValidationIssue[] {
+  const issues: ExportValidationIssue[] = [];
+  for (const [key, value] of Object.entries(tags)) {
+    const quotedKey = JSON.stringify(key);
+    if (quotedKey === undefined) {
+      throw new Error("Could not format a tag key for export validation.");
+    }
+    if (!isValidOsmKey(key)) {
+      issues.push({
+        message: `Tag key ${quotedKey} is not a valid OSM string.`,
+        featureIds
+      });
+    }
+    if (!isValidOsmValue(value)) {
+      issues.push({
+        message: `Value for tag ${quotedKey} is not a valid OSM string.`,
+        featureIds
+      });
+    }
   }
-  return entries.sort(([left], [right]) => lexicalCompare(left, right));
+  return issues;
 }
 
 function tagXml(tags: OsmTagSet): string {
@@ -157,12 +188,13 @@ function josmModifyXml(modify: DraftModify): string {
 }
 
 export function validateChangeDraft(draft: ChangeDraft): void {
-  const issues: string[] = [];
+  const issues: ExportValidationIssueInput[] = [];
   if (draft.sessionId.length === 0 || draft.snapshotId.length === 0) {
     issues.push("session and snapshot IDs are required");
   }
   const createIds = new Set<number>();
   for (const create of draft.creates) {
+    issues.push(...invalidTagIssues(create.tags, [create.feature.featureId]));
     if (create.state !== "create-selected") {
       issues.push(
         `${create.feature.featureId} is not explicitly selected for creation`
@@ -192,6 +224,7 @@ export function validateChangeDraft(draft: ChangeDraft): void {
   }
   const modifiedIds = new Set<string>();
   for (const modify of draft.modifications) {
+    issues.push(...invalidTagIssues(modify.tags, modify.featureIds));
     const elementLabel = isOsmWay(modify.node) ? "way" : "node";
     const elementId = osmElementKey(modify.node);
     if (modifiedIds.has(elementId)) {
@@ -200,6 +233,18 @@ export function validateChangeDraft(draft: ChangeDraft): void {
       );
     }
     modifiedIds.add(elementId);
+    if (!Number.isSafeInteger(modify.node.id) || modify.node.id <= 0) {
+      issues.push(`OSM ${elementLabel} has an invalid ID`);
+    }
+    if (
+      isOsmWay(modify.node) &&
+      (modify.node.nodeRefs.length < 2 ||
+        modify.node.nodeRefs.some(
+          (nodeRef) => !Number.isSafeInteger(nodeRef) || nodeRef <= 0
+        ))
+    ) {
+      issues.push(`OSM way ${modify.node.id} has invalid member references`);
+    }
     if (
       !Number.isSafeInteger(modify.node.version) ||
       modify.node.version <= 0

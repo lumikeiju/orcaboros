@@ -31,6 +31,63 @@ function exampleStop(stopId: string): EligibleStop {
 }
 
 describe("ProfileEditor", () => {
+  it("reports invalid radii without publishing an unusable profile", () => {
+    const profile = getProfileForFeedId("US-WA-KCM");
+    if (profile === undefined) {
+      throw new Error("Missing stock profile");
+    }
+    const onChange = vi.fn();
+    render(
+      <ProfileEditor profile={profile} onChange={onChange} onReset={vi.fn()} />
+    );
+    fireEvent.change(screen.getByLabelText("Auto-match radius"), {
+      target: { value: "51" }
+    });
+    expect(screen.getByRole("alert")).toHaveTextContent("cannot exceed");
+    expect(onChange).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByLabelText("Candidate radius (m)"), {
+      target: { value: "10001" }
+    });
+    expect(screen.getByRole("alert")).toHaveTextContent("10,000");
+    expect(onChange).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByLabelText("Candidate radius (m)"), {
+      target: { value: "100" }
+    });
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(onChange).toHaveBeenLastCalledWith(
+      expect.objectContaining({ candidateRadiusMeters: 100 })
+    );
+  });
+
+  it("preserves the focused constant value input as its value changes", () => {
+    const profile = getProfileForFeedId("US-WA-KCM");
+    if (profile === undefined) {
+      throw new Error("Missing stock profile");
+    }
+    const onReset = vi.fn();
+    const onChange = vi.fn();
+    const view = render(
+      <ProfileEditor profile={profile} onChange={onChange} onReset={onReset} />
+    );
+    const input = screen.getByLabelText(
+      'OSM tag value for constant "platform"'
+    );
+    input.focus();
+    fireEvent.change(input, { target: { value: "platforms" } });
+    const updatedProfile: MappingProfile = onChange.mock.calls[0]?.[0];
+    view.rerender(
+      <ProfileEditor
+        profile={updatedProfile}
+        onChange={onChange}
+        onReset={onReset}
+      />
+    );
+    expect(
+      screen.getByLabelText('OSM tag value for constant "platforms"')
+    ).toBe(input);
+    expect(input).toHaveFocus();
+  });
+
   it("renders uploaded fields and adds a field mapping", () => {
     const profile = getProfileForFeedId("US-WA-KCM");
     if (profile === undefined) {

@@ -88,8 +88,12 @@ export function buildTagProposals(
   return [...keys]
     .sort((left, right) => left.localeCompare(right))
     .map((key) => {
-      const proposedValue = proposedTags[key];
-      const currentValue = current[key];
+      const proposedValue = Object.hasOwn(proposedTags, key)
+        ? proposedTags[key]
+        : undefined;
+      const currentValue = Object.hasOwn(current, key)
+        ? current[key]
+        : undefined;
       const stale = staleKeys.includes(key) && proposedValue === undefined;
       const remove = removeKeys.includes(key) && proposedValue === undefined;
       const defaultResolution = defaultTagResolutionForKey(
@@ -202,7 +206,7 @@ export function computePostChangeTags(
   currentTags: OsmTagSet,
   proposals: readonly TagProposal[]
 ): OsmTagSet {
-  const result: Record<string, string> = { ...currentTags };
+  const result = new Map(Object.entries(currentTags));
   for (const proposal of proposals) {
     switch (proposal.resolution) {
       case "accept-proposed":
@@ -211,16 +215,16 @@ export function computePostChangeTags(
             `Cannot accept a missing proposed value for ${proposal.key}`
           );
         }
-        result[proposal.key] = proposal.proposedValue;
+        result.set(proposal.key, proposal.proposedValue);
         break;
       case "remove":
-        delete result[proposal.key];
+        result.delete(proposal.key);
         break;
       case "keep-current":
         break;
     }
   }
-  return result;
+  return Object.fromEntries(result);
 }
 
 export function removeTags(
@@ -358,14 +362,17 @@ export function firstUndecidedFeatureId({
       sourceFeedId
     ])
   );
-  const removedNode = nodes.find((node) =>
-    Object.entries(node.tags).some(([key, value]) => {
-      const sourceFeedId = identityKeys.get(key);
-      return (
-        sourceFeedId !== undefined &&
-        !validStopIds.get(sourceFeedId)?.has(value)
-      );
-    })
+  const removedNode = nodes.find(
+    (node) =>
+      reviews.get(`removed-${isOsmWay(node) ? elementKey(node) : node.id}`)
+        ?.state !== "skipped" &&
+      Object.entries(node.tags).some(([key, value]) => {
+        const sourceFeedId = identityKeys.get(key);
+        return (
+          sourceFeedId !== undefined &&
+          !validStopIds.get(sourceFeedId)?.has(value)
+        );
+      })
   );
   return removedNode === undefined
     ? undefined
@@ -379,8 +386,8 @@ export function firstUndecidedFeatureId({
 /**
  * Computes the conflation progress ring values.
  *
- * Resolved counts GTFS features that are auto-matched or have an explicit
- * review decision. Total counts every feature that requires a decision:
+ * Resolved counts GTFS decisions and OSM-only elements reviewed unchanged.
+ * Total counts every feature that requires a decision:
  * OSM-only features (removed), GTFS-only features (new), and matched
  * features (exact or moved).
  */
@@ -405,7 +412,7 @@ export function computeConflationProgress({
       sourceFeedId
     ])
   );
-  const onlyInOsmCount = nodes.filter((node) =>
+  const onlyInOsm = nodes.filter((node) =>
     Object.entries(node.tags).some(([key, value]) => {
       const sourceFeedId = identityKeys.get(key);
       return (
@@ -413,9 +420,14 @@ export function computeConflationProgress({
         !validStopIds.get(sourceFeedId)?.has(value)
       );
     })
+  );
+  const reviewedOsmCount = onlyInOsm.filter(
+    (node) =>
+      reviews.get(`removed-${isOsmWay(node) ? elementKey(node) : node.id}`)
+        ?.state === "skipped"
   ).length;
   return {
-    resolved,
-    total: onlyInOsmCount + stops.length
+    resolved: resolved + reviewedOsmCount,
+    total: onlyInOsm.length + stops.length
   };
 }

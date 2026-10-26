@@ -45,17 +45,37 @@ export function boundsFromCoordinates(
     throw new Error("Extent radius must be a non-negative finite number");
   }
 
-  const latitudes = coordinates.map((coordinate) => coordinate.latitude);
+  let minimumLatitude = Number.POSITIVE_INFINITY;
+  let maximumLatitude = Number.NEGATIVE_INFINITY;
+  let longitudePadding = 0;
+  for (const { latitude, longitude } of coordinates) {
+    if (
+      !Number.isFinite(latitude) ||
+      latitude < -90 ||
+      latitude > 90 ||
+      !Number.isFinite(longitude) ||
+      longitude < -180 ||
+      longitude > 180
+    ) {
+      throw new Error("Extent coordinates must be finite WGS84 values");
+    }
+    minimumLatitude = Math.min(minimumLatitude, latitude);
+    maximumLatitude = Math.max(maximumLatitude, latitude);
+    longitudePadding = Math.max(
+      longitudePadding,
+      longitudeDeltaForRadius(latitude, radiusMeters)
+    );
+  }
   const longitudes = coordinates.map((coordinate) =>
     normalizeLongitude(coordinate.longitude)
   );
   const south = Math.max(
     -WEB_MERCATOR_LATITUDE_LIMIT,
-    Math.min(...latitudes) - radiusMeters / 111_320
+    minimumLatitude - radiusMeters / 111_320
   );
   const north = Math.min(
     WEB_MERCATOR_LATITUDE_LIMIT,
-    Math.max(...latitudes) + radiusMeters / 111_320
+    maximumLatitude + radiusMeters / 111_320
   );
 
   const sorted = [...longitudes].sort((left, right) => left - right);
@@ -76,11 +96,6 @@ export function boundsFromCoordinates(
     east = sorted[gapIndex];
   }
 
-  const longitudePadding = Math.max(
-    ...latitudes.map((latitude) =>
-      longitudeDeltaForRadius(latitude, radiusMeters)
-    )
-  );
   west = normalizeLongitude(west - longitudePadding);
   east = normalizeLongitude(east + longitudePadding);
   return { south, west, north, east };

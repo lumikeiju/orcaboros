@@ -1,4 +1,10 @@
-import { type ReactElement, useEffect, useRef, useState } from "react";
+import {
+  type ReactElement,
+  type ReactNode,
+  useEffect,
+  useRef,
+  useState
+} from "react";
 import maplibreWorkerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
 import type {
   GeoJSONSource,
@@ -1053,8 +1059,7 @@ function focusMarker(instance: MapLibreMap, marker: MapMarker): void {
   instance.flyTo({
     center: [marker.longitude, marker.latitude],
     zoom: Math.max(instance.getZoom(), 15),
-    duration: 700,
-    essential: true
+    duration: 700
   });
 }
 
@@ -1071,20 +1076,22 @@ function fitToStops(
     instance.flyTo({
       center: [minLongitude, minLatitude],
       zoom: 14,
-      duration: 500,
-      essential: true
+      duration: 500
     });
     return;
   }
   instance.fitBounds(bounds, {
     padding: 48,
     maxZoom: 14,
-    duration: 500,
-    essential: true
+    duration: 500
   });
 }
 
-export function MapLegend(): ReactElement {
+export function MapLegend({
+  children
+}: {
+  children?: ReactNode;
+} = {}): ReactElement {
   const [isOpen, setIsOpen] = useState(true);
 
   return (
@@ -1106,6 +1113,9 @@ export function MapLegend(): ReactElement {
           <span className="map-legend-toggle-icon" aria-hidden="true" />
         </button>
       </div>
+      {children !== undefined && (
+        <div className="map-legend-tools glass-scrollbar">{children}</div>
+      )}
       <ul
         id="map-legend-items"
         className="glass-scrollbar"
@@ -1186,6 +1196,8 @@ export function MapView({
   const map = useRef<MapLibreMap | null>(null);
   const mapLoaded = useRef(false);
   const attributionExpanded = useRef(true);
+  const [mapFailure, setMapFailure] = useState<"webgl" | "basemap">();
+  const [mapAttempt, setMapAttempt] = useState(0);
   const [showZoomNotice, setShowZoomNotice] = useState(false);
   const [linkChangeFeatureId, setLinkChangeFeatureId] = useState<string>();
   const linkChangeFeatureIdRef = useRef<string | undefined>(undefined);
@@ -1196,6 +1208,8 @@ export function MapView({
   const linkChangeControlsRef = useRef<LinkChangeControls | undefined>(
     undefined
   );
+  const cancelLinkChangeRef = useRef<(() => void) | undefined>(undefined);
+  const focusedStop = stops.find((stop) => stop.featureId === focusedFeatureId);
   const derivedMapData = buildMapMarkers(
     stops,
     nodes,
@@ -1264,7 +1278,14 @@ export function MapView({
     let attributionToggle: HTMLElement | null = null;
     let handleAttributionToggle: (() => void) | undefined;
     let handleLinkChangeKeyDown: ((event: KeyboardEvent) => void) | undefined;
+    setMapFailure(undefined);
     setShowZoomNotice(false);
+    setLinkChangeFeatureId(undefined);
+    linkChangeFeatureIdRef.current = undefined;
+    linkChangeControlsRef.current = undefined;
+    lastCursorCoordinateRef.current = undefined;
+    lastCursorPointRef.current = undefined;
+    cancelLinkChangeRef.current = undefined;
     mapLoaded.current = false;
     void import("maplibre-gl").then((module) => {
       const mapContainer = container.current;
@@ -1272,16 +1293,34 @@ export function MapView({
         return;
       }
       module.setWorkerUrl(maplibreWorkerUrl);
-      const instance = new module.Map({
-        container: mapContainer,
-        style: resolvedStyleUrl,
-        center: DEFAULT_MAP_CENTER,
-        zoom: DEFAULT_MAP_ZOOM,
-        bearing: 0,
-        pitch: 0,
-        dragRotate: false,
-        pitchWithRotate: false,
-        attributionControl: { compact: true }
+      let instance: MapLibreMap;
+      try {
+        instance = new module.Map({
+          container: mapContainer,
+          style: resolvedStyleUrl,
+          center: DEFAULT_MAP_CENTER,
+          zoom: DEFAULT_MAP_ZOOM,
+          bearing: 0,
+          pitch: 0,
+          dragRotate: false,
+          pitchWithRotate: false,
+          attributionControl: { compact: true }
+        });
+      } catch (error: unknown) {
+        if (!(error instanceof module.GPUInitializationError)) {
+          throw error;
+        }
+        setMapFailure("webgl");
+        return;
+      }
+      instance.on("error", (event) => {
+        if (!disposed) {
+          setMapFailure(
+            event.error instanceof module.GPUInitializationError
+              ? "webgl"
+              : "basemap"
+          );
+        }
       });
       map.current = instance;
       const updateLinkChangeControls = (
@@ -1308,6 +1347,7 @@ export function MapView({
         updateProposedConnectionSource(instance, undefined, undefined);
         instance.getCanvas().style.cursor = "";
       };
+      cancelLinkChangeRef.current = cancelLinkChange;
       handleLinkChangeKeyDown = (event): void => {
         if (
           event.key === "Escape" &&
@@ -1353,6 +1393,7 @@ export function MapView({
         if (disposed) {
           return;
         }
+        setMapFailure(undefined);
         const labelLayerId = instance
           .getStyle()
           .layers?.find((layer) => layer.type === "symbol")?.id;
@@ -1623,7 +1664,12 @@ export function MapView({
           "osm-candidates"
         ];
         const handleFeatureClick = (event: MapLayerMouseEvent): void => {
-          const clickedFeature = event.features?.[0];
+          const clickedFeature =
+            linkChangeFeatureIdRef.current === undefined
+              ? event.features?.[0]
+              : (event.features?.find(
+                  (feature) => feature.layer.id === "osm-candidates"
+                ) ?? event.features?.[0]);
           const clickedId = clickedFeature?.properties?.id;
           const clickedLayer = clickedFeature?.layer.id;
           if (
@@ -1791,6 +1837,12 @@ export function MapView({
             };
             linkChangeControlsRef.current = controls;
             changeLinkButton.addEventListener("click", () => {
+              if (onActionRef.current === undefined) {
+                cancelLinkChange();
+                linkStatus.textContent =
+                  "Link changes are unavailable while data is loading.";
+                return;
+              }
               if (linkChangeFeatureIdRef.current === controls.featureId) {
                 cancelLinkChange();
                 return;
@@ -1895,6 +1947,7 @@ export function MapView({
     return () => {
       disposed = true;
       mapLoaded.current = false;
+      cancelLinkChangeRef.current = undefined;
       activePopup?.remove();
       if (attributionToggle !== null && handleAttributionToggle !== undefined) {
         attributionToggle.removeEventListener(
@@ -1909,7 +1962,18 @@ export function MapView({
       map.current?.remove();
       map.current = null;
     };
-  }, [resolvedStyleUrl]);
+  }, [resolvedStyleUrl, mapAttempt]);
+
+  useEffect(() => {
+    const featureId = linkChangeFeatureIdRef.current;
+    if (
+      featureId !== undefined &&
+      (onAction === undefined ||
+        !stops.some((stop) => stop.featureId === featureId))
+    ) {
+      cancelLinkChangeRef.current?.();
+    }
+  }, [onAction, stops]);
 
   useEffect(() => {
     if (mapLoaded.current && map.current !== null) {
@@ -1994,7 +2058,7 @@ export function MapView({
       <div
         ref={container}
         className="map"
-        role="img"
+        role="region"
         aria-label="OpenStreetMap candidate map"
       />
       {showZoomNotice && (
@@ -2004,15 +2068,32 @@ export function MapView({
           aria-label="Zoom map in to view data"
           onClick={() =>
             map.current?.zoomTo(DETAIL_ZOOM, {
-              duration: 500,
-              essential: true
+              duration: 500
             })
           }
         >
           Zoom in to view data
         </button>
       )}
-      <MapLegend />
+      <MapLegend>
+        {mapFailure !== undefined && (
+          <div className="map-status" role="alert">
+            <p>
+              {mapFailure === "webgl"
+                ? "The map needs WebGL2, but a graphics context could not be created. Check your browser's graphics settings."
+                : "The map could not be displayed completely. Retry the map or choose another basemap."}{" "}
+              The review queue remains available.
+            </p>
+            <button
+              type="button"
+              className="glass-button glass-button--secondary"
+              onClick={() => setMapAttempt((attempt) => attempt + 1)}
+            >
+              Retry map
+            </button>
+          </div>
+        )}
+      </MapLegend>
       <p className="map-attribution">
         Basemap:{" "}
         {styleUrl === undefined
